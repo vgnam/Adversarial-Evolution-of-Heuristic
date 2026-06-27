@@ -141,6 +141,7 @@ class LocalVLLMAPI(LLM):
             try:
                 url = f'http://127.0.0.1:{port}/completions'
                 response = self._do_request(prompt, url)
+                self._record_token_usage(None, prompt=prompt, response=response, source='estimated')
                 return response
             except:
                 continue

@@ -36,6 +36,7 @@
 from __future__ import annotations
 
 import copy
+import os
 from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
@@ -43,6 +44,7 @@ import numpy as np
 from llm4ad.base import Evaluation
 from llm4ad.task.optimization.cvrp_construct.get_instance import GetData
 from llm4ad.task.optimization.cvrp_construct.template import template_program, task_description
+from llm4ad.task.optimization._dataset_loader import load_dataset_file
 
 
 class CVRPEvaluation(Evaluation):
@@ -51,6 +53,10 @@ class CVRPEvaluation(Evaluation):
                  n_instance=16,
                  problem_size=50,
                  capacity=40,
+                 load_from_file: bool = False,
+                 dataset_split: str = 'train',
+                 dataset_size: int | None = None,
+                 dataset_file: str | None = None,
                  **kwargs):
 
         super().__init__(
@@ -60,12 +66,24 @@ class CVRPEvaluation(Evaluation):
             timeout_seconds=timeout_seconds
         )
 
-        self.problem_size = problem_size + 1
+        external_problem_size = dataset_size if dataset_size is not None else problem_size
+        self.problem_size = external_problem_size + 1
         self.n_instance = n_instance
         self.capacity = capacity
 
-        getData = GetData(self.n_instance, self.problem_size, self.capacity)
-        self._datasets = getData.generate_instances()
+        if load_from_file:
+            self._datasets = load_dataset_file(
+                os.path.dirname(__file__),
+                filename=dataset_file,
+                split=dataset_split,
+                size=external_problem_size,
+            )
+            self.n_instance = min(self.n_instance, len(self._datasets))
+            if self._datasets:
+                self.problem_size = len(self._datasets[0][0])
+        else:
+            getData = GetData(self.n_instance, self.problem_size, self.capacity)
+            self._datasets = getData.generate_instances()
 
     def plot_solution(self, instance: np.ndarray, route: list, demands: list, vehicle_capacity: int):
         """

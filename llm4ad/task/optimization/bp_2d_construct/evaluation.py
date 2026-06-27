@@ -36,6 +36,7 @@
 
 
 from __future__ import annotations
+import os
 from typing import List, Tuple, Callable, Any
 import numpy as np
 import matplotlib.pyplot as plt
@@ -44,6 +45,7 @@ import matplotlib.patches as patches
 from llm4ad.base import Evaluation
 from llm4ad.task.optimization.bp_2d_construct.get_instance import GetData
 from llm4ad.task.optimization.bp_2d_construct.template import template_program, task_description
+from llm4ad.task.optimization._dataset_loader import load_dataset_file
 
 __all__ = ['BP2DEvaluation']
 
@@ -58,10 +60,15 @@ class BP2DEvaluation(Evaluation):
                  n_items: int = 100,
                  bin_width: int = 100,
                  bin_height: int = 100,
+                 load_from_file: bool = False,
+                 dataset_split: str = 'train',
+                 dataset_size: int | None = None,
+                 dataset_file: str | None = None,
                  **kwargs):
         """
         Args:
             n_bins: The number of available bins at the beginning.
+            load_from_file: if True, load a fixed train/test dataset from disk.
         """
         super().__init__(
             template_program=template_program,
@@ -71,12 +78,24 @@ class BP2DEvaluation(Evaluation):
         )
 
         self.n_instance = n_instance
-        self.n_items = n_items
-        self.n_bins = n_bins
+        self.n_items = dataset_size if dataset_size is not None else n_items
+        self.n_bins = max(n_bins, self.n_items)
         self.bin_width = bin_width
         self.bin_height = bin_height
-        getData = GetData(self.n_instance, self.n_items, self.bin_width, self.bin_height)
-        self._datasets = getData.generate_instances()
+        if load_from_file:
+            self._datasets = load_dataset_file(
+                os.path.dirname(__file__),
+                filename=dataset_file,
+                split=dataset_split,
+                size=self.n_items,
+            )
+            self.n_instance = min(self.n_instance, len(self._datasets))
+            if self._datasets:
+                self.n_items = len(self._datasets[0][0])
+                self.n_bins = max(self.n_bins, self.n_items)
+        else:
+            getData = GetData(self.n_instance, self.n_items, self.bin_width, self.bin_height)
+            self._datasets = getData.generate_instances()
 
     def plot_solution(self, bins: List[List[Tuple[Tuple[int, int], Tuple[int, int]]]], bin_dimensions: Tuple[int, int]):
         """

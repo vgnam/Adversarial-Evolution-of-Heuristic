@@ -25,12 +25,6 @@ from typing import Optional
 from ...base import Function
 from .profile import ProfilerBase
 
-try:
-    os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Disable TF onednn for better performance
-    from torch.utils.tensorboard import SummaryWriter
-except:
-    pass
-
 
 class TensorboardProfiler(ProfilerBase):
     # _num_samples = 0
@@ -54,8 +48,18 @@ class TensorboardProfiler(ProfilerBase):
                          create_random_path=create_random_path,
                          **kwargs)
 
-        # summary writer instance for Tensorboard
+        self._writer = None
+
+        # Import TensorBoard only when this profiler is actually used.
         if log_dir:
+            os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Disable TF onednn for better performance
+            try:
+                from torch.utils.tensorboard import SummaryWriter
+            except Exception as exc:
+                raise RuntimeError(
+                    'TensorBoard profiler is unavailable. Use a non-TensorBoard profiler '
+                    'or install compatible torch/tensorboard/protobuf versions.'
+                ) from exc
             self._writer = SummaryWriter(log_dir=self._log_dir)
 
 
@@ -75,7 +79,7 @@ class TensorboardProfiler(ProfilerBase):
             self._register_function_lock.release()
 
     def finish(self):
-        if self._log_dir:
+        if self._writer is not None:
             self._writer.close()
 
     def _write_tensorboard(self, *args, **kwargs):

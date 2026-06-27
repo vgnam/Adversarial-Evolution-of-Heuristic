@@ -139,6 +139,23 @@ class EoH:
         if profiler is not None:
             self._profiler.record_parameters(llm, evaluation, self)  # ZL: necessary
 
+    @property
+    def best_function(self) -> Function | None:
+        candidates = [
+            f for f in (self._population.population + self._population._next_gen_pop)
+            if f.score is not None
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda f: f.score)
+
+    @property
+    def best_program(self) -> Program | None:
+        best = self.best_function
+        if best is None:
+            return None
+        return TextFunctionProgramConverter.function_to_program(best, self._template_program)
+
     def _adjust_pop_size(self):
         # adjust population size
         if self._max_sample_nums >= 10000:

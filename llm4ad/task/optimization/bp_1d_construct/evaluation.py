@@ -35,6 +35,7 @@
 
 
 from __future__ import annotations
+import os
 import matplotlib.pyplot as plt
 from typing import Callable, Any, List, Tuple
 import copy
@@ -42,6 +43,7 @@ import copy
 from llm4ad.base import Evaluation
 from llm4ad.task.optimization.bp_1d_construct.get_instance import GetData
 from llm4ad.task.optimization.bp_1d_construct.template import template_program, task_description
+from llm4ad.task.optimization._dataset_loader import load_dataset_file
 
 __all__ = ['BP1DEvaluation']
 
@@ -55,10 +57,15 @@ class BP1DEvaluation(Evaluation):
                  n_instance: int = 8,
                  n_items: int = 500,
                  bin_capacity: int = 100,
+                 load_from_file: bool = False,
+                 dataset_split: str = 'train',
+                 dataset_size: int | None = None,
+                 dataset_file: str | None = None,
                  **kwargs):
         """
         Args:
             n_bins: The number of available bins at the beginning.
+            load_from_file: if True, load a fixed train/test dataset from disk.
         """
         super().__init__(
             template_program=template_program,
@@ -68,11 +75,23 @@ class BP1DEvaluation(Evaluation):
         )
 
         self.n_instance = n_instance
-        self.n_items = n_items
+        self.n_items = dataset_size if dataset_size is not None else n_items
         self.bin_capacity = bin_capacity
-        self.n_bins = n_bins
-        getData = GetData(self.n_instance, self.n_items, self.bin_capacity)
-        self._datasets = getData.generate_instances()
+        self.n_bins = max(n_bins, self.n_items)
+        if load_from_file:
+            self._datasets = load_dataset_file(
+                os.path.dirname(__file__),
+                filename=dataset_file,
+                split=dataset_split,
+                size=self.n_items,
+            )
+            self.n_instance = min(self.n_instance, len(self._datasets))
+            if self._datasets:
+                self.n_items = len(self._datasets[0][0])
+                self.n_bins = max(self.n_bins, self.n_items)
+        else:
+            getData = GetData(self.n_instance, self.n_items, self.bin_capacity)
+            self._datasets = getData.generate_instances()
 
     def plot_bins(self, bins: List[List[int]], bin_capacity: int):
         """

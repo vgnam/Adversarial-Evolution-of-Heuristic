@@ -37,6 +37,7 @@
 
 
 from __future__ import annotations
+import os
 from typing import Callable, Any, List, Tuple
 import numpy as np
 import matplotlib.pyplot as plt
@@ -44,6 +45,7 @@ import matplotlib.pyplot as plt
 from llm4ad.base import Evaluation
 from llm4ad.task.optimization.cflp_construct.get_instance import GetData
 from llm4ad.task.optimization.cflp_construct.template import template_program, task_description
+from llm4ad.task.optimization._dataset_loader import load_dataset_file
 
 __all__ = ['CFLPEvaluation']
 
@@ -59,6 +61,10 @@ class CFLPEvaluation(Evaluation):
                  max_capacity: int = 100,
                  max_demand: int = 20,
                  max_cost: int = 50,
+                 load_from_file: bool = False,
+                 dataset_split: str = 'train',
+                 dataset_size: int | None = None,
+                 dataset_file: str | None = None,
                  **kwargs):
         """
         Initialize the evaluator.
@@ -71,13 +77,26 @@ class CFLPEvaluation(Evaluation):
         )
 
         self.n_instance = n_instance
-        self.n_facilities = n_facilities
-        self.n_customers = n_customers
+        self.n_facilities = dataset_size if dataset_size is not None else n_facilities
+        self.n_customers = dataset_size if dataset_size is not None else n_customers
         self.max_capacity = max_capacity
         self.max_demand = max_demand
         self.max_cost = max_cost
-        getData = GetData(self.n_instance, self.n_facilities, self.n_customers, self.max_capacity, self.max_demand, self.max_cost)
-        self._datasets = getData.generate_instances()
+        if load_from_file:
+            self._datasets = load_dataset_file(
+                os.path.dirname(__file__),
+                filename=dataset_file,
+                split=dataset_split,
+                size=self.n_facilities,
+            )
+            self.n_instance = min(self.n_instance, len(self._datasets))
+            if self._datasets:
+                first = self._datasets[0]
+                self.n_facilities = len(first["facility_capacities"])
+                self.n_customers = len(first["customer_demands"])
+        else:
+            getData = GetData(self.n_instance, self.n_facilities, self.n_customers, self.max_capacity, self.max_demand, self.max_cost)
+            self._datasets = getData.generate_instances()
 
     def evaluate_program(self, program_str: str, callable_func: Callable) -> Any | None:
         return self.evaluate_cflp(callable_func)

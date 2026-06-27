@@ -347,7 +347,7 @@ class MCTS_AHD:
         if is_valid_func and func.score != float('-inf'):
             self._population.register_function(func)
             now_node = MCTSNode(func.algorithm, str(func), -1 * func.score, individual=func,
-                                parent=cur_node, depth=1, visit=1, Q=func.score, raw_info=func)
+                                parent=cur_node, depth=cur_node.depth + 1, visit=1, Q=func.score, raw_info=func)
             if option == 'e1':
                 now_node.subtree.append(now_node)
             cur_node.add_child(now_node)

@@ -25,11 +25,6 @@ from typing import Optional, Literal
 from ...base import Function
 from .profile import ProfilerBase
 
-try:
-    import wandb
-except:
-    pass
-
 
 class WandBProfiler(ProfilerBase):
 
@@ -57,35 +52,42 @@ class WandBProfiler(ProfilerBase):
                          **wandb_init_kwargs)
 
         self._wandb_project_name = wandb_project_name
+        try:
+            import wandb
+        except Exception as exc:
+            raise RuntimeError(
+                'W&B profiler is unavailable. Use a non-W&B profiler or install wandb.'
+            ) from exc
+        self._wandb = wandb
 
         if fork_proc == 'auto':
             # for MacOS and Linux
             if sys.platform.startswith('darwin') or sys.platform.startswith('linux'):
-                setting = wandb.Settings(start_method='fork')
-                self._logger_wandb = wandb.init(
+                setting = self._wandb.Settings(start_method='fork')
+                self._logger_wandb = self._wandb.init(
                     project=self._wandb_project_name,
                     dir=self._log_dir,
                     settings=setting,
                     **wandb_init_kwargs
                 )
             else:  # for Windows
-                wandb.setup()
-                self._logger_wandb = wandb.init(
+                self._wandb.setup()
+                self._logger_wandb = self._wandb.init(
                     project=self._wandb_project_name,
                     dir=self._log_dir,
                     **wandb_init_kwargs
                 )
         elif fork_proc is True:
-            setting = wandb.Settings(start_method='fork')
-            self._logger_wandb = wandb.init(
+            setting = self._wandb.Settings(start_method='fork')
+            self._logger_wandb = self._wandb.init(
                 project=self._wandb_project_name,
                 dir=self._log_dir,
                 settings=setting,
                 **wandb_init_kwargs
             )
         else:
-            wandb.setup()
-            self._logger_wandb = wandb.init(
+            self._wandb.setup()
+            self._logger_wandb = self._wandb.init(
                 project=self._wandb_project_name,
                 dir=self._log_dir,
                 **wandb_init_kwargs
@@ -129,4 +131,4 @@ class WandBProfiler(ProfilerBase):
         )
 
     def finish(self):
-        wandb.finish()
+        self._wandb.finish()

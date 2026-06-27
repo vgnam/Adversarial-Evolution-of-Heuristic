@@ -40,6 +40,7 @@ class LocalOllamaLLM(LLM):
 
     def draw_sample(self, prompt: str | Any, *args, **kwargs) -> str:
         response = self.model.invoke(prompt)
+        self._record_token_usage(None, prompt=prompt, response=response, source='estimated')
         return response
 
 

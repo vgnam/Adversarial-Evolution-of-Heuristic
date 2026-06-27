@@ -24,20 +24,39 @@ import json
 import time
 from typing import Any
 import traceback
+from urllib.parse import urlparse
 from ...base import LLM
 
 
 class HttpsApi(LLM):
+    @staticmethod
+    def _parse_base_url(host: str) -> tuple[str, str]:
+        host = str(host).strip()
+        if '://' in host:
+            parsed = urlparse(host)
+            netloc = parsed.netloc
+            path = parsed.path or '/v1'
+        else:
+            netloc, _, suffix = host.partition('/')
+            path = f'/{suffix}' if suffix else '/v1'
+
+        path = path.rstrip('/') or '/v1'
+        if path.endswith('/chat/completions'):
+            endpoint_path = path
+        else:
+            endpoint_path = f'{path}/chat/completions'
+        return netloc, endpoint_path
+
     def __init__(self, host, key, model, timeout=60, **kwargs):
         """Https API
         Args:
-            host   : host name. please note that the host name does not include 'https://'
+            host   : host name or OpenAI-compatible base URL.
             key    : API key.
             model  : LLM model name.
             timeout: API timeout.
         """
         super().__init__(**kwargs)
-        self._host = host
+        self._host, self._endpoint_path = self._parse_base_url(host)
         self._key = key
         self._model = model
         self._timeout = timeout
@@ -116,13 +135,19 @@ class HttpsApi(LLM):
                     'User-Agent': 'Apifox/1.0.0 (https://apifox.com)',
                     'Content-Type': 'application/json'
                 }
-                conn.request('POST', '/v1/chat/completions', payload, headers)
+                conn.request('POST', self._endpoint_path, payload, headers)
                 res = conn.getresponse()
                 data = res.read().decode('utf-8')
                 data = json.loads(data)
 
                 # Extract content from the standard response format
                 response = data['choices'][0]['message']['content']
+                self._record_token_usage(
+                    data.get('usage'),
+                    prompt=messages,
+                    response=response,
+                    source='api',
+                )
                 # Reset error counter on success
                 if self.debug_mode:
                     self._cumulative_error = 0

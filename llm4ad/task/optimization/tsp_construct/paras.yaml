@@ -1,2 +1,4 @@
 name: TSPEvaluation
 timeout_seconds: 20
+n_instance: 64
+load_from_file: true

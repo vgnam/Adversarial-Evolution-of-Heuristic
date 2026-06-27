@@ -34,6 +34,7 @@
 
 
 from __future__ import annotations
+import os
 from typing import Any, List, Tuple, Callable
 import numpy as np
 import matplotlib.pyplot as plt
@@ -41,6 +42,7 @@ import matplotlib.pyplot as plt
 from llm4ad.base import Evaluation
 from llm4ad.task.optimization.jssp_construct.get_instance import GetData
 from llm4ad.task.optimization.jssp_construct.template import template_program, task_description
+from llm4ad.task.optimization._dataset_loader import load_dataset_file
 
 __all__ = ['JSSPEvaluation']
 
@@ -53,14 +55,11 @@ class JSSPEvaluation(Evaluation):
                  n_instance=16,
                  n_jobs=50,
                  n_machines=10,
+                 load_from_file: bool = False,
+                 dataset_split: str = 'train',
+                 dataset_size: int | None = None,
+                 dataset_file: str | None = None,
                  **kwargs):
-        """
-        Args:
-            None
-        Raises:
-            AttributeError: If the data key does not exist.
-            FileNotFoundError: If the specified data file is not found.
-        """
         super().__init__(
             template_program=template_program,
             task_description=task_description,
@@ -69,10 +68,21 @@ class JSSPEvaluation(Evaluation):
         )
 
         self.n_instance = n_instance
-        self.n_jobs = n_jobs
+        self.n_jobs = dataset_size if dataset_size is not None else n_jobs
         self.n_machines = n_machines
-        getData = GetData(self.n_instance, self.n_jobs, self.n_machines)
-        self._datasets = getData.generate_instances()
+        if load_from_file:
+            self._datasets = load_dataset_file(
+                os.path.dirname(__file__),
+                filename=dataset_file,
+                split=dataset_split,
+                size=self.n_jobs,
+            )
+            self.n_instance = min(self.n_instance, len(self._datasets))
+            if self._datasets:
+                _, self.n_jobs, self.n_machines = self._datasets[0]
+        else:
+            getData = GetData(self.n_instance, self.n_jobs, self.n_machines)
+            self._datasets = getData.generate_instances()
 
     def evaluate_program(self, program_str: str, callable_func: Callable) -> Any | None:
         return self.evaluate(callable_func)

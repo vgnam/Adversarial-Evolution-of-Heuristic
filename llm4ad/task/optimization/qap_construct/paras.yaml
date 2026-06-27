@@ -1,2 +1,3 @@
 name: QAPEvaluation
 timeout_seconds: 30
+load_from_file: true

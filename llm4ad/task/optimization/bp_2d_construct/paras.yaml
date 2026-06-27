@@ -1,2 +1,3 @@
 name: BP2DEvaluation
 timeout_seconds: 120
+load_from_file: true

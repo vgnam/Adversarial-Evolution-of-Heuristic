@@ -26,11 +26,33 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
 import pytz
 import inspect
 import llm4ad
+from llm4ad.task.optimization.fixed_test_eval import evaluate_best_on_fixed_test_datasets
 
 
 # Dynamically import all usable classes from the 'llm4ad' package
 for module in [llm4ad.tools.llm, llm4ad.tools.profiler, llm4ad.task, llm4ad.method]:
     globals().update({name: obj for name, obj in vars(module).items() if inspect.isclass(obj)})
+
+
+DEFAULT_PROFILER_BY_METHOD = {
+    'AdvEoH': 'AdvEoHProfiler',
+    'EoH': 'EoHProfiler',
+    'FunSearch': 'FunSearchProfiler',
+    'LHNS': 'LHNSProfiler',
+    'MCTS_AHD': 'MAProfiler',
+    'MEoH': 'MEoHProfiler',
+    'MLES': 'MLESProfiler',
+    'MOEAD': 'MOEADProfiler',
+    'NSGA2': 'NSGA2Profiler',
+    'PartEvo': 'PartEvoProfiler',
+    'ReEvo': 'ReEvoProfiler',
+}
+
+
+def _resolve_profiler_name(method_name: str, requested_profiler_name: str) -> str:
+    if requested_profiler_name == 'ProfilerBase':
+        return DEFAULT_PROFILER_BY_METHOD.get(method_name, requested_profiler_name)
+    return requested_profiler_name
 
 
 def main_gui(llm: dict,
@@ -81,14 +103,19 @@ def main_gui(llm: dict,
         main_gui(llm_config, method_config, evaluation_config, profiler_config)
         """
 
-    profiler_case = globals()[profiler['name']]
-    llm_case = globals()[llm['name']]
-    method_case = globals()[method['name']]
-    eval_case = globals()[evaluation['name']]
+    method_name = method['name']
+    evaluation_name = evaluation['name']
+    profiler_name = _resolve_profiler_name(method_name, profiler['name'])
 
-    profiler = profiler_case(evaluation_name=evaluation['name'],
-                             method_name=method['name'],
-                             log_dir=profiler['log_dir'], log_style='complex',create_random_path=False, final_log_dir=profiler['log_dir'])
+    profiler_case = globals()[profiler_name]
+    llm_case = globals()[llm['name']]
+    method_case = globals()[method_name]
+    eval_case = globals()[evaluation_name]
+
+    profiler_instance = profiler_case(evaluation_name=evaluation_name,
+                                      method_name=method_name,
+                                      log_dir=profiler['log_dir'], log_style='complex', create_random_path=False,
+                                      final_log_dir=profiler['log_dir'])
 
     llm.pop('name')
 
@@ -100,10 +127,18 @@ def main_gui(llm: dict,
     llm_case = llm_case(**llm_params)
     eval_case = eval_case(**evaluation_params)
     method_case = method_case(llm=llm_case,
-                              profiler=profiler,
+                              profiler=profiler_instance,
                               evaluation=eval_case,
                               **method_params)
     method_case.run()
+    try:
+        evaluate_best_on_fixed_test_datasets(
+            evaluation_cls=eval_case.__class__,
+            evaluation_params=evaluation_params,
+            log_dir=getattr(profiler_instance, '_log_dir', profiler['log_dir']),
+        )
+    except Exception as exc:
+        print(f'[Eval] Skipped fixed test evaluation: {type(exc).__name__}: {exc}')
 
 
 if __name__ == '__main__':
@@ -111,7 +146,7 @@ if __name__ == '__main__':
         'name': 'HttpsApi',
         'host': "api.bltcy.top",
         'key': "",
-        'model': "gpt-4o-mini"
+        'model': "gpt-5-mini"
     }
 
     method = {
@@ -131,7 +166,7 @@ if __name__ == '__main__':
 
     temp_str1 = evaluation['name']
     temp_str2 = method['name']
-    process_start_time = datetime.now(pytz.timezone("Asia/Shanghai"))
+    process_start_time = datetime.now(pytz.timezone("Asia/Bangkok"))
     b = os.path.abspath('..')
     log_folder = b + '/llm4ad/logs/' + process_start_time.strftime(
         "%Y%m%d_%H%M%S") + f'_{temp_str1}' + f'_{temp_str2}'

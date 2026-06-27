@@ -1,2 +1,3 @@
 name: OVRPEvaluation
 timeout_seconds: 20
+load_from_file: true

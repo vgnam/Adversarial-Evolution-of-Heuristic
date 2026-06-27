@@ -21,6 +21,9 @@ from __future__ import annotations
 
 import ast
 import copy
+import json
+import math
+import threading
 from abc import abstractmethod
 from typing import Any, List
 
@@ -36,6 +39,126 @@ class LLM:
         """
         self.do_auto_trim = do_auto_trim
         self.debug_mode = debug_mode
+        self._token_usage_lock = threading.Lock()
+        self._token_usage_local = threading.local()
+        self._token_usage_totals = {
+            'requests': 0,
+            'estimated_requests': 0,
+            'prompt_tokens': 0,
+            'completion_tokens': 0,
+            'total_tokens': 0,
+        }
+
+    @staticmethod
+    def _usage_to_dict(usage: Any) -> dict:
+        if usage is None:
+            return {}
+        if isinstance(usage, dict):
+            return dict(usage)
+        if hasattr(usage, 'model_dump'):
+            try:
+                return usage.model_dump()
+            except Exception:
+                pass
+        if hasattr(usage, 'dict'):
+            try:
+                return usage.dict()
+            except Exception:
+                pass
+        result = {}
+        for key in (
+                'prompt_tokens', 'completion_tokens', 'total_tokens',
+                'input_tokens', 'output_tokens',
+        ):
+            if hasattr(usage, key):
+                result[key] = getattr(usage, key)
+        return result
+
+    @staticmethod
+    def _as_int(value: Any) -> int | None:
+        try:
+            if value is None:
+                return None
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _text_for_token_estimate(value: Any) -> str:
+        if value is None:
+            return ''
+        if isinstance(value, str):
+            return value
+        try:
+            return json.dumps(value, ensure_ascii=False, default=str)
+        except TypeError:
+            return str(value)
+
+    @classmethod
+    def _estimate_token_count(cls, value: Any) -> int:
+        text = cls._text_for_token_estimate(value)
+        if not text:
+            return 0
+        # Conservative fallback for OpenAI-style token accounting when an API
+        # does not return usage. Actual API usage replaces this estimate.
+        return max(1, math.ceil(len(text) / 4))
+
+    def _record_token_usage(self, usage: Any = None, *,
+                            prompt: Any = None, response: Any = None,
+                            source: str = 'api') -> dict:
+        usage_dict = self._usage_to_dict(usage)
+        prompt_tokens = self._as_int(
+            usage_dict.get('prompt_tokens', usage_dict.get('input_tokens'))
+        )
+        completion_tokens = self._as_int(
+            usage_dict.get('completion_tokens', usage_dict.get('output_tokens'))
+        )
+        total_tokens = self._as_int(usage_dict.get('total_tokens'))
+
+        estimated = False
+        if prompt_tokens is None:
+            prompt_tokens = self._estimate_token_count(prompt)
+            estimated = True
+        if completion_tokens is None:
+            completion_tokens = self._estimate_token_count(response)
+            estimated = True
+        if total_tokens is None:
+            total_tokens = prompt_tokens + completion_tokens
+            estimated = True
+
+        token_usage = {
+            'prompt_tokens': prompt_tokens,
+            'completion_tokens': completion_tokens,
+            'total_tokens': total_tokens,
+            'source': 'estimated' if estimated and not usage_dict else source,
+            'estimated': estimated,
+        }
+        model = getattr(self, '_model', None)
+        if model is not None:
+            token_usage['model'] = model
+
+        prompt_details = usage_dict.get('prompt_tokens_details')
+        if isinstance(prompt_details, dict):
+            cached_tokens = self._as_int(prompt_details.get('cached_tokens'))
+            if cached_tokens is not None:
+                token_usage['cached_tokens'] = cached_tokens
+
+        self._token_usage_local.last = dict(token_usage)
+        with self._token_usage_lock:
+            self._token_usage_totals['requests'] += 1
+            if token_usage['estimated']:
+                self._token_usage_totals['estimated_requests'] += 1
+            for key in ('prompt_tokens', 'completion_tokens', 'total_tokens'):
+                self._token_usage_totals[key] += token_usage[key]
+        return token_usage
+
+    def get_last_token_usage(self) -> dict | None:
+        usage = getattr(self._token_usage_local, 'last', None)
+        return copy.deepcopy(usage) if usage is not None else None
+
+    def get_token_usage_totals(self) -> dict:
+        with self._token_usage_lock:
+            return dict(self._token_usage_totals)
 
     @abstractmethod
     def draw_sample(self, prompt: str | Any, *args, **kwargs) -> str:

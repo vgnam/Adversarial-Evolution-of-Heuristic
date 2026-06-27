@@ -33,12 +33,14 @@
 # --------------------------------------------------------------------------
 
 from __future__ import annotations
+import os
 from typing import Callable, Any, List, Tuple
 import matplotlib.pyplot as plt
 
 from llm4ad.base import Evaluation
 from llm4ad.task.optimization.knapsack_construct.get_instance import GetData
 from llm4ad.task.optimization.knapsack_construct.template import template_program, task_description
+from llm4ad.task.optimization._dataset_loader import load_dataset_file
 
 __all__ = ['KnapsackEvaluation']
 
@@ -51,6 +53,10 @@ class KnapsackEvaluation(Evaluation):
                  n_instance=32,
                  n_items=50,
                  knapsack_capacity=100,
+                 load_from_file: bool = False,
+                 dataset_split: str = 'train',
+                 dataset_size: int | None = None,
+                 dataset_file: str | None = None,
                  **kwargs):
         """
         Initialize the evaluator for the Knapsack Problem.
@@ -63,10 +69,21 @@ class KnapsackEvaluation(Evaluation):
         )
 
         self.n_instance = n_instance
-        self.n_items = n_items
+        self.n_items = dataset_size if dataset_size is not None else n_items
         self.knapsack_capacity = knapsack_capacity
-        getData = GetData(self.n_instance, self.n_items, self.knapsack_capacity)
-        self._datasets = getData.generate_instances()
+        if load_from_file:
+            self._datasets = load_dataset_file(
+                os.path.dirname(__file__),
+                filename=dataset_file,
+                split=dataset_split,
+                size=self.n_items,
+            )
+            self.n_instance = min(self.n_instance, len(self._datasets))
+            if self._datasets:
+                self.n_items = len(self._datasets[0][0])
+        else:
+            getData = GetData(self.n_instance, self.n_items, self.knapsack_capacity)
+            self._datasets = getData.generate_instances()
 
     def evaluate_program(self, program_str: str, callable_func: Callable) -> Any | None:
         return self.evaluate(callable_func)

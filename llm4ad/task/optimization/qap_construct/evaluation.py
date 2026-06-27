@@ -31,6 +31,7 @@
 # --------------------------------------------------------------------------
 
 from __future__ import annotations
+import os
 import numpy as np
 from typing import Callable, Any, List, Tuple
 import matplotlib.pyplot as plt
@@ -38,6 +39,7 @@ import matplotlib.pyplot as plt
 from llm4ad.base import Evaluation
 from llm4ad.task.optimization.qap_construct.get_instance import GetData
 from llm4ad.task.optimization.qap_construct.template import template_program, task_description
+from llm4ad.task.optimization._dataset_loader import load_dataset_file
 from copy import deepcopy
 __all__ = ['QAPEvaluation']
 
@@ -49,6 +51,10 @@ class QAPEvaluation(Evaluation):
                  timeout_seconds=60,
                  n_facilities=20,
                  n_instance=8,
+                 load_from_file: bool = False,
+                 dataset_split: str = 'train',
+                 dataset_size: int | None = None,
+                 dataset_file: str | None = None,
                  **kwargs):
         """
         Initializes the QAP evaluator.
@@ -61,9 +67,21 @@ class QAPEvaluation(Evaluation):
         )
 
         self.n_instance = n_instance
-        self.n_facilities = n_facilities
-        self.data_generator = GetData(self.n_instance, self.n_facilities)
-        self._datasets = self.data_generator.generate_instances()
+        self.n_facilities = dataset_size if dataset_size is not None else n_facilities
+        if load_from_file:
+            self._datasets = load_dataset_file(
+                os.path.dirname(__file__),
+                filename=dataset_file,
+                split=dataset_split,
+                size=self.n_facilities,
+            )
+            self.n_instance = min(self.n_instance, len(self._datasets))
+            if self._datasets:
+                self.n_facilities = self._datasets[0][0].shape[0]
+            self.data_generator = None
+        else:
+            self.data_generator = GetData(self.n_instance, self.n_facilities)
+            self._datasets = self.data_generator.generate_instances()
 
     def evaluate_program(self, program_str: str, callable_func: Callable) -> Any | None:
         """

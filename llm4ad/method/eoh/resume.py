@@ -4,6 +4,7 @@ import copy
 import json
 import os.path
 import re
+from typing import Any
 
 from tqdm.auto import tqdm
 
@@ -13,12 +14,26 @@ from .population import Population
 from ...base import TextFunctionProgramConverter as tfpc, Function
 
 
+def _score_or_neg_inf(score: Any):
+    return float('-inf') if score is None else score
+
+
+def _pop_order(filename: str) -> int | None:
+    match = re.fullmatch(r'pop_(\d+)\.json', filename)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
 def _get_latest_pop_json(log_path: str):
     path = os.path.join(log_path, 'population')
-    orders = []
-    for p in os.listdir(path):
-        order = int(p.split('.')[0].split('_')[1])
-        orders.append(order)
+    orders = [
+        order
+        for filename in os.listdir(path)
+        if (order := _pop_order(filename)) is not None
+    ]
+    if not orders:
+        raise FileNotFoundError(f'No population checkpoints found in {path}')
     max_o = max(orders)
     return os.path.join(path, f'pop_{max_o}.json'), max_o
 
@@ -27,8 +42,11 @@ def _get_all_samples_and_scores(path, get_algorithm=True):
     file_dir = os.path.join(path, 'samples')
     # get all file directories
     all_files = os.listdir(file_dir)
-    # filer `samples_*.json` files and ignore `samples_best.json`
-    sample_files = [f for f in all_files if f.startswith('samples_') and f != 'samples_best.json']
+    # filter `samples_*.json` files and ignore best snapshots
+    sample_files = [
+        f for f in all_files
+        if f.startswith('samples_') and 'best' not in f
+    ]
 
     def extract_number(filename):
         # match the first number of the filename
@@ -49,12 +67,14 @@ def _get_all_samples_and_scores(path, get_algorithm=True):
         with open(file_path, 'r', encoding='utf-8') as f:
             samples = json.load(f)
             for sample in samples:
-                func = sample['function']
-                acc = sample['score'] if sample['score'] else float('-inf')
+                func = sample.get('function') or sample.get('program')
+                if not func:
+                    continue
+                acc = _score_or_neg_inf(sample.get('score'))
                 all_func.append(func)
                 all_score.append(acc)
-                all_algorithm.append(sample['algorithm'])
-                max_o = sample['sample_order']
+                all_algorithm.append(sample.get('algorithm', ''))
+                max_o = max(max_o, sample.get('sample_order', 0))
 
     if get_algorithm:
         return all_func, all_score, max_o, all_algorithm
@@ -91,17 +111,19 @@ def _resume_pop(log_path: str, pop_size) -> Population:
     print(f'RESUME EoH: Generations: {max_gen}.', flush=True)
     with open(path, 'r') as f:
         data = json.load(f)
-    pop = Population(pop_size=pop_size)
+    funcs = []
     for d in data:
         func = d['function']
         func = tfpc.text_to_function(func)
-        score = d['score']
-        algorithm = d['algorithm']
+        if func is None:
+            continue
+        score = _score_or_neg_inf(d.get('score'))
+        algorithm = d.get('algorithm', '')
         func.score = score
         func.algorithm = algorithm
-        pop.register_function(func)
-    pop._generation = max_gen
-    return pop
+        func.operator = d.get('operator', getattr(func, 'operator', 'Unknown'))
+        funcs.append(func)
+    return Population(pop_size=pop_size, generation=max_gen, pop=funcs)
 
 
 def _resume_text2func(f, s, template_func: Function):
@@ -117,16 +139,19 @@ def _resume_text2func(f, s, template_func: Function):
 
 
 def _resume_pf(log_path: str, pf: EoHProfiler, template_func):
+    if pf is None:
+        return
     _, db_max_order = _get_latest_pop_json(log_path)
     funcs, scores, sample_max_order, algorithms = _get_all_samples_and_scores(log_path)
     print(f'RESUME EoH: Sample order: {sample_max_order}.', flush=True)
-    pf.__class__._prog_db_order = db_max_order
-    # pf.__class__._num_samples = sample_max_order
+    if hasattr(pf, '_cur_gen'):
+        pf._cur_gen = db_max_order
     for i in tqdm(range(len(funcs)), desc='Resume EoH Profiler'):  # noqa
         f, s, algo = funcs[i], scores[i], algorithms[i]
         f = _resume_text2func(f, s, template_func)
         f.algorithm = algo
         pf.register_function(f, resume_mode=True)
+    pf._num_samples = sample_max_order
 
 
 def resume_eoh(eoh: EoH, path):

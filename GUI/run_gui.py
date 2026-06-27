@@ -66,11 +66,11 @@ problem_para_value_name_list = []
 
 llm_para_entry_list = []
 llm_para_value_name_list = ['name', 'host', 'key', 'model']
-llm_para_default_value_list = ['HttpsApi', '', '', '']
-llm_para_placeholder_list = ['HttpsApi', 'api.bltcy.top', 'sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', 'gpt-4o-mini']
+llm_para_default_value_list = ['HttpsApi', 'https://api.vectorengine.ai/v1', os.environ.get('LLM_API_KEY', ''), 'gpt-5-nano']
+llm_para_placeholder_list = ['HttpsApi', 'https://api.vectorengine.ai/v1', 'sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx', 'gpt-5-nano']
 
-default_method = 'eoh'
-default_problem = ['admissible_set', 'car_mountain', 'bactgrow']
+default_method = 'mcts_ahd'
+default_problem = ['tsp_construct']
 
 log_dir = None
 figures = None
@@ -367,6 +367,16 @@ def check_para():
     return True
 
 
+def coerce_entry_value(raw_value, value_type):
+    if value_type == '<class \'int\'>':
+        return int(raw_value)
+    if value_type == '<class \'float\'>':
+        return float(raw_value)
+    if value_type == '<class \'bool\'>':
+        return str(raw_value).strip().lower() in ('1', 'true', 'yes', 'y')
+    return raw_value
+
+
 def return_para():
     llm_para = {}
     method_para = {}
@@ -379,16 +389,18 @@ def return_para():
         llm_para[llm_para_value_name_list[i]] = llm_para_entry_list[i].get()
 
     for i in range(len(method_para_entry_list)):
-        method_para[method_para_value_name_list[i]] = method_para_entry_list[i].get()
-        if method_para_value_type_list[i] == '<class \'int\'>':
-            method_para[method_para_value_name_list[i]] = int(method_para_entry_list[i].get())
+        method_para[method_para_value_name_list[i]] = coerce_entry_value(
+            method_para_entry_list[i].get(),
+            method_para_value_type_list[i],
+        )
 
     method_para['num_samplers'] = method_para['num_evaluators']
 
     for i in range(len(problem_para_entry_list)):
-        problem_para[problem_para_value_name_list[i]] = problem_para_entry_list[i].get()
-        if problem_para_value_type_list[i] == '<class \'int\'>':
-            problem_para[problem_para_value_name_list[i]] = int(problem_para_entry_list[i].get())
+        problem_para[problem_para_value_name_list[i]] = coerce_entry_value(
+            problem_para_entry_list[i].get(),
+            problem_para_value_type_list[i],
+        )
 
     ####################
 
@@ -709,12 +721,14 @@ if __name__ == '__main__':
     llm_frame.grid_columnconfigure(0, weight=1)
     llm_frame.grid_columnconfigure(1, weight=1)
 
-    with_default_parameter = False
+    with_default_parameter = True
     if with_default_parameter:
         for i in range(len(llm_para_value_name_list)):
-            llm_para_entry_list[i].delete(0, 'end')
-            llm_para_entry_list[i].configure(foreground=llm_para_entry_list[i].default_fg_color)
-            llm_para_entry_list[i].insert(0, str(llm_para_default_value_list[i]))
+            if llm_para_default_value_list[i]:
+                llm_para_entry_list[i].delete(0, 'end')
+                llm_para_entry_list[i].configure(foreground=llm_para_entry_list[i].default_fg_color)
+                llm_para_entry_list[i].insert(0, str(llm_para_default_value_list[i]))
+                llm_para_entry_list[i].have_content = True
     else:
         llm_para_entry_list[0].delete(0, 'end')
         llm_para_entry_list[0].configure(foreground=llm_para_entry_list[0].default_fg_color)

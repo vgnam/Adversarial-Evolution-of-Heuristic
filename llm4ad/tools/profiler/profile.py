@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import uuid
 from typing import Literal, Optional, List, Tuple
 
 import numpy as np
@@ -55,7 +56,10 @@ class ProfilerBase:
         self._num_objs = num_objs
         self._num_samples = initial_num_samples
         self._process_start_time = datetime.now(pytz.timezone('Asia/Shanghai'))
-        self._result_folder = self._process_start_time.strftime('%Y%m%d_%H%M%S')
+        self._result_folder = (
+            self._process_start_time.strftime('%Y%m%d_%H%M%S_%f')
+            + f'_pid{os.getpid()}_{uuid.uuid4().hex[:8]}'
+        )
 
         self._log_dir = log_dir
         self._log_style = log_style
@@ -260,7 +264,7 @@ class ProfilerBase:
         self._logger_txt.info('--------------------------------------------------------------------')
         self._logger_txt.info(f'  - LLM: {llm.__class__.__name__}')
         for attr, value in llm.__dict__.items():
-            if attr not in ['_functions']:
+            if attr not in ['_functions', '_token_usage_lock', '_token_usage_local']:
                 self._logger_txt.info(f'  - {attr}: {value}')
         self._logger_txt.info('====================================================================')
         self._logger_txt.info('Problem Parameters')

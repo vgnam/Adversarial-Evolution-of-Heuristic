@@ -33,6 +33,7 @@
 # --------------------------------------------------------------------------
 
 from __future__ import annotations
+import os
 from typing import Any, List, Tuple, Callable
 import numpy as np
 import matplotlib.pyplot as plt
@@ -40,6 +41,7 @@ import matplotlib.pyplot as plt
 from llm4ad.base import Evaluation
 from llm4ad.task.optimization.set_cover_construct.get_instance import GetData
 from llm4ad.task.optimization.set_cover_construct.template import template_program, task_description
+from llm4ad.task.optimization._dataset_loader import load_dataset_file
 
 __all__ = ['SCPEvaluation']
 
@@ -55,6 +57,10 @@ class SCPEvaluation(Evaluation):
                  n_elements: int = 50,
                  n_subsets: int = 50,
                  max_subset_size: int = 8,
+                 load_from_file: bool = False,
+                 dataset_split: str = 'train',
+                 dataset_size: int | None = None,
+                 dataset_file: str | None = None,
                  **kwargs):
         """
         Args:
@@ -62,6 +68,7 @@ class SCPEvaluation(Evaluation):
             n_elements: Number of elements in the universal set.
             n_subsets: Number of subsets in the collection.
             max_subset_size: Maximum size of each subset.
+            load_from_file: if True, load a fixed train/test dataset from disk.
         """
         super().__init__(
             template_program=template_program,
@@ -71,12 +78,25 @@ class SCPEvaluation(Evaluation):
         )
 
         self.n_instance = n_instance
-        self.n_elements = n_elements
-        self.n_subsets = n_subsets
+        self.n_elements = dataset_size if dataset_size is not None else n_elements
+        self.n_subsets = dataset_size if dataset_size is not None else n_subsets
         self.max_subset_size = max_subset_size
 
-        getData = GetData(self.n_instance, self.n_elements, self.n_subsets, self.max_subset_size)
-        self._datasets = getData.generate_instances()
+        if load_from_file:
+            self._datasets = load_dataset_file(
+                os.path.dirname(__file__),
+                filename=dataset_file,
+                split=dataset_split,
+                size=self.n_elements,
+            )
+            self.n_instance = min(self.n_instance, len(self._datasets))
+            if self._datasets:
+                universal_set, subsets = self._datasets[0]
+                self.n_elements = len(universal_set)
+                self.n_subsets = len(subsets)
+        else:
+            getData = GetData(self.n_instance, self.n_elements, self.n_subsets, self.max_subset_size)
+            self._datasets = getData.generate_instances()
 
     def evaluate_program(self, program_str: str, callable_func: Callable) -> Any | None:
         """
