@@ -19,3 +19,12 @@ mwu_eta_heu: 2.5
 mwu_eta_inst: 1.6
 num_samplers: 4
 num_evaluators: 4
+
+# Failure-Mode Accumulation (FMA) settings
+use_fma: true
+fma_lambda: 0.3
+fma_memory_size: 100
+fma_min_delta: 0.05
+fma_top_k_failures: 3
+fma_heuristic_coverage_weight: 0.2
+fma_archive_path: null

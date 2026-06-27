@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import concurrent.futures
 import copy
+import hashlib
+import math
+import random
 import time
 import traceback
+from collections import deque
 from threading import Lock, Thread
 from typing import Optional, List, Literal
 
@@ -17,6 +21,14 @@ from ...base import (
     Evaluation, LLM, Function, Program, TextFunctionProgramConverter, SecureEvaluator
 )
 from ...tools.profiler import ProfilerBase
+
+
+# =============================================================================
+# Failure-Mode Accumulation imports (lightweight, no LLM dependency)
+# =============================================================================
+
+from .failure_memory import FailureModeMemory, FailureMode
+from .failure_analyzer import FailureAnalyzer
 
 
 class AdvEoH:
@@ -106,6 +118,20 @@ class AdvEoH:
     rounds against a frozen heuristic reference set, after which a new phase
     starts (frozen instance set rebuilt, plateau counters reset).
 
+    Failure-Mode Accumulation (FMA)
+    -------------------------------
+    When ``use_fma=True``, the system maintains a persistent FailureModeMemory.
+    After each evaluation round, a FailureAnalyzer extracts abstract weakness
+    descriptions from instances where heuristics performed poorly. These failure
+    modes are stored in memory and influence future evolution:
+
+    * Generator objective: reward = difficulty + lambda * novelty_penalty, where
+      novelty_penalty = 1 - max_similarity(description, archived_failures).
+    * Heuristic objective: fitness weighted by coverage over archived failure
+      modes (fraction of modes the heuristic survives).
+    * Failure descriptions are injected into prompts so both sides are aware of
+      historical weaknesses.
+
     Robustness & concurrency
     ------------------------
     * ``n_seed``              — seeds per generator (fitness averaged across seeds).
@@ -124,7 +150,8 @@ class AdvEoH:
     ------
     ``resume_adveoh`` rebuilds both populations, HoFs, MWU weights and phase
     state (phase id, phase best, no-improve count, phase heuristic generations)
-    plus the best held-out heuristic from a previous run's logs.
+    plus the best held-out heuristic from a previous run's logs. The FMA memory
+    is also persisted and reloaded from the log directory.
 
     Args:
         llm_heu             : LLM for generating heuristics.
@@ -162,6 +189,19 @@ class AdvEoH:
         multi_thread_or_process_eval: 'thread' or 'process' evaluation pool.
         resume_mode         : internal flag; prefer ``resume_adveoh`` to resume.
         debug_mode          : print detailed information.
+
+    FMA-specific args:
+        use_fma                 : enable Failure-Mode Accumulation.
+        fma_lambda              : weight of novelty penalty in generator reward.
+        fma_memory_size         : max failure modes retained in memory.
+        fma_min_delta           : minimum performance delta to record a failure.
+        fma_top_k_failures      : number of top failure descriptions to inject
+                                  into prompts.
+        fma_heuristic_coverage_weight: weight of failure-mode coverage in
+                                  heuristic fitness.
+        fma_archive_path        : path for persisting failure memory (defaults to
+                                  log_dir/failure_memory.json when profiler is
+                                  available).
     """
 
     def __init__(self,
@@ -200,6 +240,14 @@ class AdvEoH:
                  resume_mode: bool = False,
                  debug_mode: bool = False,
                  multi_thread_or_process_eval: Literal['thread', 'process'] = 'thread',
+                 # --- FMA parameters ---
+                 use_fma: bool = True,
+                 fma_lambda: float = 0.3,
+                 fma_memory_size: int = 100,
+                 fma_min_delta: float = 0.05,
+                 fma_top_k_failures: int = 3,
+                 fma_heuristic_coverage_weight: float = 0.2,
+                 fma_archive_path: Optional[str] = None,
                  **kwargs):
 
         self._debug_mode = debug_mode
@@ -235,6 +283,14 @@ class AdvEoH:
         self._plateau_epsilon = plateau_epsilon
         self._mwu_eta_heu = mwu_eta_heu
         self._mwu_eta_inst = mwu_eta_inst
+
+        # --- FMA configuration ---
+        self._use_fma = use_fma
+        self._fma_lambda = fma_lambda
+        self._fma_memory_size = fma_memory_size
+        self._fma_min_delta = fma_min_delta
+        self._fma_top_k_failures = fma_top_k_failures
+        self._fma_heuristic_coverage_weight = fma_heuristic_coverage_weight
 
         # --- Parse heuristic template ---
         self._template_program_heu_str = heu_evaluation.template_program
@@ -302,9 +358,184 @@ class AdvEoH:
         self._skip_initial_heuristic_population_once = resume_mode
         self._skip_initial_instance_population_once = resume_mode
 
+        # --- FMA: Failure-Mode Accumulation ---
+        self._fma_memory = FailureModeMemory(path=fma_archive_path)
+        self._fma_analyzer = FailureAnalyzer(task=self._task_description_heu_str[:64])
+        # Track which failure signatures each heuristic has survived
+        self._heuristic_coverage: dict[str, set[str]] = {}
+        # Instance evaluations that may reveal failures (populated during scoring)
+        self._pending_failure_analysis: list[dict] = []
+        self._pending_failure_lock = Lock()
+
         # --- Pass parameters to profiler ---
         if profiler is not None:
             self._profiler.record_parameters(llm_heu, heu_evaluation, self)
+
+    # ================================================================
+    #  FMA: Failure-Mode Accumulation helpers
+    # ================================================================
+
+    def _get_task_name(self) -> str:
+        """Derive a short task name from the heuristic task description."""
+        desc = self._task_description_heu_str[:60].strip()
+        # Simple heuristic: first few meaningful words
+        words = desc.replace(',', ' ').replace('.', ' ').split()
+        key_words = [w for w in words if len(w) > 3][:4]
+        return '_'.join(key_words).lower() if key_words else 'task'
+
+    def _fma_individual_id(self, func: Function) -> str:
+        """Get or compute a deterministic SHA1 for a function."""
+        return Population._individual_id(func)
+
+    def _fma_heuristic_coverage_key(self, heu_func: Function) -> str:
+        return self._fma_individual_id(heu_func)
+
+    def _fma_maybe_record_failure(self,
+                                   instance: any,
+                                   heuristic_score: float,
+                                   optimal_value: Optional[float],
+                                   generator_func: Function,
+                                   heuristic_func: Function,
+                                   generation: int,
+                                   instance_seed: int):
+        """Run failure analysis on a single (instance, heuristic) pair and
+        record any discovered failure mode in memory."""
+        if not self._use_fma:
+            return
+
+        delta = (optimal_value - heuristic_score) if optimal_value is not None else None
+        if delta is not None and delta < self._fma_min_delta:
+            return
+
+        mode = self._fma_analyzer.analyze(
+            instance=instance,
+            heuristic_score=heuristic_score,
+            optimal_value=optimal_value,
+            generator_description=getattr(generator_func, 'algorithm', ''),
+            heuristic_description=getattr(heuristic_func, 'algorithm', ''),
+            generator_id=self._fma_individual_id(generator_func),
+            heuristic_id=self._fma_individual_id(heuristic_func),
+            generation=generation,
+            instance_seed=instance_seed,
+        )
+        if mode is not None:
+            added = self._fma_memory.add(mode)
+            if self._debug_mode and added:
+                print(f'  [FMA] New failure mode: {mode.description[:80]}...')
+            # Prune memory if over capacity
+            if len(self._fma_memory) > self._fma_memory_size:
+                all_modes = self._fma_memory.get_all()
+                # Keep the most threatening ones
+                sorted_modes = sorted(
+                    all_modes,
+                    key=lambda m: (m.strength, m.normalized_delta),
+                    reverse=True,
+                )
+                self._fma_memory._modes = {
+                    m.signature: m for m in sorted_modes[:self._fma_memory_size]
+                }
+                self._fma_memory._save()
+
+    def _fma_collect_failure_analysis(self):
+        """Process any pending failure analysis items accumulated during
+        instance scoring."""
+        with self._pending_failure_lock:
+            items = list(self._pending_failure_analysis)
+            self._pending_failure_analysis.clear()
+
+        for item in items:
+            self._fma_maybe_record_failure(
+                instance=item.get('instance'),
+                heuristic_score=item.get('heuristic_score'),
+                optimal_value=item.get('optimal_value'),
+                generator_func=item.get('generator_func'),
+                heuristic_func=item.get('heuristic_func'),
+                generation=item.get('generation', 0),
+                instance_seed=item.get('instance_seed', 0),
+            )
+
+    def _fma_generator_novelty_reward(self, description: str) -> float:
+        """Compute the novelty reward for a generator.
+
+        novelty = 1 - max_similarity(description, archived_failures)
+
+        A generator that exposes a weakness unlike any in memory receives
+        a high novelty bonus.
+        """
+        if not self._use_fma or len(self._fma_memory) == 0:
+            return 1.0
+        return self._fma_memory.novelty_vs_memory(description)
+
+    def _fma_heuristic_coverage_bonus(self, heu_func: Function) -> float:
+        """Compute coverage bonus for a heuristic.
+
+        Returns the fraction of archived failure modes that this heuristic
+        has survived (verified robust against).
+        """
+        if not self._use_fma or len(self._fma_memory) == 0:
+            return 0.0
+        heu_key = self._fma_heuristic_coverage_key(heu_func)
+        survived = self._heuristic_coverage.get(heu_key, set())
+        return self._fma_memory.coverage_fraction(survived)
+
+    def _fma_mark_heuristic_survived(self, heu_func: Function,
+                                      instance: any,
+                                      heuristic_score: float,
+                                      optimal_value: Optional[float]):
+        """If a heuristic performed well on an instance that corresponds to
+        an archived failure mode, mark it as covered."""
+        if not self._use_fma or len(self._fma_memory) == 0:
+            return
+        if heuristic_score is None:
+            return
+
+        # Estimate which failure mode this instance might correspond to
+        # by checking similarity with archived mode descriptions
+        for mode in self._fma_memory.get_all():
+            if mode.strength < 0.2:
+                continue
+            # Check if performance is good enough to be "surviving" this failure
+            if optimal_value is not None and abs(optimal_value) > 1e-12:
+                ratio = (optimal_value - heuristic_score) / abs(optimal_value)
+                if ratio < self._fma_min_delta:  # heuristic did well
+                    heu_key = self._fma_heuristic_coverage_key(heu_func)
+                    if heu_key not in self._heuristic_coverage:
+                        self._heuristic_coverage[heu_key] = set()
+                    if mode.signature not in self._heuristic_coverage[heu_key]:
+                        self._heuristic_coverage[heu_key].add(mode.signature)
+                        self._fma_memory.mark_covered(mode.signature)
+
+    def _fma_failure_descriptions_for_prompt(self) -> list[str]:
+        """Get the top-k most threatening failure descriptions for prompt
+        injection into the generator and heuristic LLMs."""
+        if not self._use_fma or len(self._fma_memory) == 0:
+            return []
+        return self._fma_memory.get_descriptions(k=self._fma_top_k_failures)
+
+    def _fma_modified_generator_fitness(
+        self,
+        base_fitness: float,
+        generator_func: Function,
+        instances: list,
+    ) -> float:
+        """Modified generator fitness: difficulty + lambda * novelty.
+
+        ``base_fitness`` is the original minimax score (negative = hard).
+        We re-interpret it as difficulty and add the novelty bonus.
+        """
+        if not self._use_fma:
+            return base_fitness
+
+        # Difficulty: negate base_fitness so that more negative = harder = higher difficulty
+        difficulty = -base_fitness if base_fitness is not None else 0.0
+
+        # Novelty: how different are the generated instances' failure patterns
+        # from what's already in memory?
+        gen_desc = getattr(generator_func, 'algorithm', '')
+        novelty = self._fma_generator_novelty_reward(gen_desc)
+
+        modified = difficulty + self._fma_lambda * novelty
+        return modified
 
     # ================================================================
     #  Core: sample -> evaluate -> register
@@ -493,7 +724,7 @@ class AdvEoH:
 
         inst_fitness = self._score_instances_against_reference(
             instances,
-            reference_heuristics or self._build_heuristic_reference_set()
+            reference_heuristics or self._build_heuristic_reference_set(),
         )
         if inst_fitness is None:
             self._record_rejected_token_usage(
@@ -505,12 +736,27 @@ class AdvEoH:
             print(f'[AdvEoH] Invalid instance generator ({operator}): could not score against heuristic references.')
             return
 
-        func.score = inst_fitness
+        # --- FMA: modify generator fitness with novelty reward ---
+        if self._use_fma:
+            modified_fitness = self._fma_modified_generator_fitness(
+                inst_fitness, func, instances
+            )
+            if self._debug_mode:
+                print(
+                    f'  [FMA] Generator fitness: base={inst_fitness:.4f} -> '
+                    f'modified={modified_fitness:.4f} '
+                    f'(lambda={self._fma_lambda})'
+                )
+            func.score = modified_fitness
+        else:
+            func.score = inst_fitness
+
         func.evaluate_time = 0.0
         func.algorithm = thought
         func.sample_time = sample_time
         func.operator = operator
         func.instances = instances
+        func._fma_base_fitness = inst_fitness  # store original for reference
         self._instance_cache_by_code[str(func)] = instances
         self._tot_sample_nums += 1
 
@@ -548,22 +794,52 @@ class AdvEoH:
             self._cache_heuristic_score(heu_func, instances, None)
             return None
 
+    # ================================================================
+    #  FMA-extended instance scoring
+    # ================================================================
+
     def _score_instances_against_reference(
             self,
             instances: list,
             reference_heuristics: list[Function],
+            *,
+            _generation: int = 0,
+            _generator_func: Optional[Function] = None,
     ) -> float | None:
-        """Minimax generator score: -mean_seed(max_h score(h, instance_seed))."""
+        """Minimax generator score: -mean_seed(max_h score(h, instance_seed)).
+
+        When FMA is enabled, also queues failure analysis for each
+        (heuristic, instance) pair where performance is poor.
+        """
         if not instances or not reference_heuristics:
             return None
 
         per_seed_best_scores = []
-        for inst in instances:
+        for inst_idx, inst in enumerate(instances):
             seed_scores = []
             for heu_func in reference_heuristics:
                 score = self._evaluate_heuristic_function(heu_func, instances=[inst])
                 if score is not None:
                     seed_scores.append(score)
+
+                    # --- FMA: queue failure analysis on poorly-performing heuristics ---
+                    if self._use_fma and _generator_func is not None and score < 0.5:
+                        with self._pending_failure_lock:
+                            self._pending_failure_analysis.append({
+                                'instance': inst,
+                                'heuristic_score': score,
+                                'optimal_value': None,
+                                'generator_func': _generator_func,
+                                'heuristic_func': heu_func,
+                                'generation': _generation,
+                                'instance_seed': inst_idx,
+                            })
+                    # --- FMA: mark heuristic as survived if it performed well ---
+                    if self._use_fma:
+                        self._fma_mark_heuristic_survived(
+                            heu_func, inst, score, optimal_value=None
+                        )
+
             if seed_scores:
                 per_seed_best_scores.append(max(seed_scores))
 
@@ -611,11 +887,25 @@ class AdvEoH:
         """Refresh generator scores against the frozen current heuristic reference set."""
         for inst_func in self._inst_pop.population:
             instances = self._ensure_instance_cache(inst_func)
-            score = self._score_instances_against_reference(instances, reference_heuristics)
+            score = self._score_instances_against_reference(
+                instances,
+                reference_heuristics,
+                _generation=self._gen_counter(),
+                _generator_func=inst_func,
+            )
             if score is not None:
-                inst_func.score = score
+                if self._use_fma:
+                    inst_func.score = self._fma_modified_generator_fitness(
+                        score, inst_func, instances
+                    )
+                else:
+                    inst_func.score = score
             else:
                 inst_func.score = float('-inf')
+
+    def _gen_counter(self) -> int:
+        """Approximate current generation counter."""
+        return getattr(self, '_resume_heu_generation', 0) + getattr(self, '_phase_heu_gens', 0)
 
     # ================================================================
     #  Initialization
@@ -670,6 +960,15 @@ class AdvEoH:
 
             def sample_init(_sample_index: int):
                 opponent_descs = self._heu_hof.get_top_k_descriptions(self._n_opponent_desc)
+                # --- FMA: inject failure descriptions ---
+                if self._use_fma:
+                    failure_descs = self._fma_failure_descriptions_for_prompt()
+                    if failure_descs:
+                        opponent_descs = list(opponent_descs) if opponent_descs else []
+                        opponent_descs.extend([
+                            f'Archived failure mode to exploit: {d}'
+                            for d in failure_descs
+                        ])
                 prompt = InstancePrompt.get_prompt_i1(
                     self._task_description_inst_str,
                     self._function_to_evolve_inst,
@@ -706,6 +1005,18 @@ class AdvEoH:
         self._heu_pop.update_weights()
 
         opponent_descs = self._inst_hof.get_top_k_descriptions(self._n_opponent_desc)
+
+        # --- FMA: inject failure descriptions as "historical weaknesses to survive" ---
+        if self._use_fma:
+            failure_descs = self._fma_failure_descriptions_for_prompt()
+            if failure_descs:
+                heu_opponent_descs = list(opponent_descs) if opponent_descs else []
+                heu_opponent_descs.extend([
+                    f'Historical weakness that heuristics should survive: {d}'
+                    for d in failure_descs
+                ])
+                opponent_descs = heu_opponent_descs
+
         if self._debug_mode and opponent_descs:
             print(f'  [heu] opponent descs: {opponent_descs}')
 
@@ -758,6 +1069,24 @@ class AdvEoH:
         if len(self._heu_pop._next_gen_pop) > 0:
             self._heu_pop.survival()
 
+        # --- FMA: add heuristic coverage bonus to scores ---
+        if self._use_fma and len(self._fma_memory) > 0:
+            for heu_func in self._heu_pop.population:
+                if heu_func.score is not None and heu_func.score != float('-inf'):
+                    coverage_bonus = self._fma_heuristic_coverage_bonus(heu_func)
+                    if coverage_bonus > 0:
+                        bonus_score = (
+                            heu_func.score
+                            + self._fma_heuristic_coverage_weight * coverage_bonus * abs(heu_func.score)
+                        )
+                        if self._debug_mode:
+                            print(
+                                f'  [FMA] Heuristic coverage bonus: '
+                                f'base={heu_func.score:.4f}, coverage={coverage_bonus:.3f}, '
+                                f'modified={bonus_score:.4f}'
+                            )
+                        heu_func.score = bonus_score
+
     def _evolve_instances(self, gen: int, reference_heuristics: list[Function] | None = None):
         """Phase B: evolve instance generators against a frozen heuristic reference set."""
         reference_heuristics = reference_heuristics or self._build_heuristic_reference_set()
@@ -767,6 +1096,18 @@ class AdvEoH:
         self._inst_pop.update_weights()
 
         opponent_descs = self._heu_hof.get_top_k_descriptions(self._n_opponent_desc)
+
+        # --- FMA: inject failure descriptions as weaknesses to exploit ---
+        if self._use_fma:
+            failure_descs = self._fma_failure_descriptions_for_prompt()
+            if failure_descs:
+                inst_opponent_descs = list(opponent_descs) if opponent_descs else []
+                inst_opponent_descs.extend([
+                    f'Previously discovered weakness to re-exploit: {d}'
+                    for d in failure_descs
+                ])
+                opponent_descs = inst_opponent_descs
+
         if self._debug_mode and opponent_descs:
             print(f'  [inst] opponent descs: {opponent_descs}')
 
@@ -1000,6 +1341,9 @@ class AdvEoH:
                 )
                 self._evolve_instances(0, reference_heuristics=reference_heuristics)
                 self._inst_hof.update(self._inst_pop)
+                # --- FMA: collect failure analysis after instance evolution ---
+                if self._use_fma:
+                    self._fma_collect_failure_analysis()
                 if not self._continue_loop():
                     print(f'[AdvEoH] Reached max_sample_nums={self._max_sample_nums} during initial G refinement.')
                     break
@@ -1049,6 +1393,17 @@ class AdvEoH:
                     self._heu_pop, gen, heldout
                 )
 
+            # --- FMA: collect and report failure analysis ---
+            if self._use_fma:
+                self._fma_collect_failure_analysis()
+                if self._debug_mode and len(self._fma_memory) > 0:
+                    top_f = self._fma_memory.most_threatening(3)
+                    print(
+                        f'  [FMA] Memory: {len(self._fma_memory)} modes, '
+                        f'top strength: '
+                        f'{", ".join(f"{m.description[:40]}... (s={m.strength:.2f})" for m in top_f[:2])}'
+                    )
+
             plateau_reached = (
                 phase_heu_gens >= self._min_heu_generations_per_phase and
                 no_improve_count >= self._plateau_window
@@ -1082,6 +1437,9 @@ class AdvEoH:
                 print(f'[AdvEoH] Phase B: Evolving instances inner round {inner_round}/{self._inst_update_inner_rounds}...')
                 self._evolve_instances(gen, reference_heuristics=reference_heuristics)
                 self._inst_hof.update(self._inst_pop)
+                # --- FMA: collect failure analysis after instance evolution ---
+                if self._use_fma:
+                    self._fma_collect_failure_analysis()
                 inst_gen += 1
                 if isinstance(self._profiler, AdvEoHProfiler):
                     self._profiler.register_instance_generation(
@@ -1105,6 +1463,14 @@ class AdvEoH:
         print('\n[AdvEoH] === Final held-out evaluation ===')
         final_heldout = self._log_heldout(self._max_generations)
         print(f'[AdvEoH] Final held-out score: {final_heldout}')
+        if self._use_fma:
+            print(f'[AdvEoH] FMA: {len(self._fma_memory)} failure modes accumulated.')
+            top_threats = self._fma_memory.most_threatening(5)
+            if top_threats:
+                print('[AdvEoH] FMA: Top threats:')
+                for i, m in enumerate(top_threats):
+                    print(f'  {i + 1}. [{m.severity:.1f}] {m.description[:80]}... '
+                          f'(strength={m.strength:.2f}, coverage={m.coverage})')
         self._record_best_heldout_function()
 
         self._finish()
