@@ -250,6 +250,8 @@ class AdvEoH:
                  fma_archive_path: Optional[str] = None,
                  **kwargs):
 
+        
+
         self._debug_mode = debug_mode
         self._resume_mode = resume_mode
         llm_heu.debug_mode = debug_mode
@@ -371,6 +373,14 @@ class AdvEoH:
         if profiler is not None:
             self._profiler.record_parameters(llm_heu, heu_evaluation, self)
 
+        if use_fma:
+            self._fma_analyzer = FailureAnalyzer(
+                task=self._task_description_heu_str[:120],
+                llm_call_fn=self._fma_llm_call,   # see _fma_llm_call below
+                model='claude-haiku-4-5-20251001',
+                max_tokens=80,
+            )
+            
     # ================================================================
     #  FMA: Failure-Mode Accumulation helpers
     # ================================================================
@@ -389,6 +399,192 @@ class AdvEoH:
 
     def _fma_heuristic_coverage_key(self, heu_func: Function) -> str:
         return self._fma_individual_id(heu_func)
+
+    def _fma_llm_call(self, prompt: str, system: str) -> Optional[str]:
+        """Thin adapter: call AdvEoH's heuristic LLM for failure description generation.
+    
+        Bypasses the full sampler/population machinery — fires a single raw call.
+        Returns the text response or None on failure.
+        """
+        try:
+            # Use the heuristic LLM (llm_heu) which is already authenticated.
+            # AdvEoHSampler exposes the underlying LLM via self._sampler_heu.llm
+            llm = self._sampler_heu.llm
+            response = llm.generate(
+                prompt=prompt,
+                system=system,
+                max_tokens=80,
+            )
+            return response.strip() if response else None
+        except Exception:
+            return None
+    
+    
+# ---------------------------------------------------------------------------
+# Fix 3a: replace _fma_mark_heuristic_survived
+# ---------------------------------------------------------------------------
+ 
+    def _fma_try_mark_covered(
+        self,
+        heu_func,          # Function
+        generator_func,    # Function  ← NEW: need the generator to gate coverage
+        heuristic_score: float,
+        optimal_value: Optional[float],
+    ) -> None:
+        """Credit heuristic coverage ONLY for failure modes triggered by this generator.
+    
+        Fix 3: the old implementation looped over all archived modes and credited
+        coverage whenever the heuristic scored well on *any* instance, regardless
+        of which generator produced it. This produced spurious coverage credits.
+    
+        The corrected version passes generator_id to FailureModeMemory.try_mark_covered,
+        which only credits modes whose generator_id matches the current generator.
+        """
+        if not self._use_fma or len(self._fma_memory) == 0:
+            return
+    
+        generator_id = self._fma_individual_id(generator_func)
+        heu_key = self._fma_heuristic_coverage_key(heu_func)
+    
+        newly_covered = self._fma_memory.try_mark_covered(
+            heu_func_id=heu_key,
+            generator_id=generator_id,
+            heuristic_score=heuristic_score,
+            optimal_value=optimal_value,
+            min_delta=self._fma_min_delta,
+        )
+    
+        if newly_covered:
+            if heu_key not in self._heuristic_coverage:
+                self._heuristic_coverage[heu_key] = set()
+            self._heuristic_coverage[heu_key].update(newly_covered)
+    
+    
+    # ---------------------------------------------------------------------------
+    # Fix 3b: replace _score_instances_against_reference
+    # ---------------------------------------------------------------------------
+    
+    def _score_instances_against_reference(
+        self,
+        instances: list,
+        reference_heuristics: list,
+        *,
+        _generation: int = 0,
+        _generator_func=None,   # Function | None
+    ) -> Optional[float]:
+        """Minimax generator score: -mean_seed(max_h score(h, instance_seed)).
+    
+        Fixes applied:
+        - Passes _generator_func to _fma_try_mark_covered so coverage is only
+        credited for failure modes triggered by THIS generator (Fix 3).
+        - Failure analysis queue entries now include generator_func for accurate
+        generator_id tracking.
+        """
+        if not instances or not reference_heuristics:
+            return None
+    
+        per_seed_best_scores = []
+    
+        for inst_idx, inst in enumerate(instances):
+            seed_scores = []
+    
+            for heu_func in reference_heuristics:
+                score = self._evaluate_heuristic_function(heu_func, instances=[inst])
+                if score is None:
+                    continue
+    
+                seed_scores.append(score)
+    
+                if self._use_fma and _generator_func is not None:
+                    # Queue failure analysis for poor-performing heuristics
+                    if score < 0.5:
+                        with self._pending_failure_lock:
+                            self._pending_failure_analysis.append({
+                                'instance': inst,
+                                'heuristic_score': score,
+                                'optimal_value': None,
+                                'generator_func': _generator_func,   # preserved
+                                'heuristic_func': heu_func,
+                                'generation': _generation,
+                                'instance_seed': inst_idx,
+                            })
+    
+                    # Fix 3: pass generator_func so coverage is correctly gated
+                    self._fma_try_mark_covered(
+                        heu_func=heu_func,
+                        generator_func=_generator_func,
+                        heuristic_score=score,
+                        optimal_value=None,
+                    )
+    
+            if seed_scores:
+                per_seed_best_scores.append(max(seed_scores))
+    
+        if not per_seed_best_scores:
+            return None
+        return -float(np.mean(per_seed_best_scores))
+    
+    
+    # ---------------------------------------------------------------------------
+    # Fix 1 (also update): _fma_maybe_record_failure
+    # Unchanged in logic — but FailureAnalyzer now calls LLM internally,
+    # so no changes needed here. Included for completeness / clarity.
+    # ---------------------------------------------------------------------------
+    
+    def _fma_maybe_record_failure(
+        self,
+        instance,
+        heuristic_score: float,
+        optimal_value: Optional[float],
+        generator_func,
+        heuristic_func,
+        generation: int,
+        instance_seed: int,
+    ) -> None:
+        """Run failure analysis and record any new mode.
+    
+        Fix 1 is transparent here: FailureAnalyzer.analyze() internally calls
+        the LLM to produce the description. The rest of this method is unchanged.
+        """
+        if not self._use_fma:
+            return
+    
+        delta = (optimal_value - heuristic_score) if optimal_value is not None else None
+        if delta is not None and delta < self._fma_min_delta:
+            return
+    
+        mode = self._fma_analyzer.analyze(
+            instance=instance,
+            heuristic_score=heuristic_score,
+            optimal_value=optimal_value,
+            generator_description=getattr(generator_func, 'algorithm', ''),
+            heuristic_description=getattr(heuristic_func, 'algorithm', ''),
+            generator_id=self._fma_individual_id(generator_func),
+            heuristic_id=self._fma_individual_id(heuristic_func),
+            generation=generation,
+            instance_seed=instance_seed,
+        )
+        if mode is None:
+            return
+    
+        added = self._fma_memory.add(mode)
+        if self._debug_mode and added:
+            print(f'  [FMA] New failure mode: {mode.description[:80]}')
+    
+        # Prune memory if over capacity (unchanged)
+        if len(self._fma_memory) > self._fma_memory_size:
+            all_modes = self._fma_memory.get_all()
+            sorted_modes = sorted(
+                all_modes,
+                key=lambda m: (m.strength, m.normalized_delta),
+                reverse=True,
+            )
+            self._fma_memory._modes = {
+                m.signature: m for m in sorted_modes[:self._fma_memory_size]
+            }
+            self._fma_memory._save()
+    
+
 
     def _fma_maybe_record_failure(self,
                                    instance: any,

@@ -1,84 +1,97 @@
 from __future__ import annotations
 
-import math
+import json
+import textwrap
 from typing import Any, List, Optional
 
 from .failure_memory import FailureMode
 
 
+# =============================================================================
+# FailureAnalyzer — LLM-primary failure description generator
+# =============================================================================
+
 class FailureAnalyzer:
-    """Analyzes evaluation results to extract failure-mode descriptions.
+    """Analyzes evaluation results and produces LLM-generated failure descriptions.
 
-    Input: A generated problem instance, the heuristic's attempted solution,
-    the ground truth / optimal solution, and the performance delta.
+    Fix 1: The primary description comes from an LLM call, not a pre-programmed
+    template. Statistical features (clustering, sparsity, scale) are computed
+    from the instance and passed as *context* to the LLM prompt. The LLM then
+    produces a free-form, instance-specific description of the weakness.
 
-    Processing: Uses description-based analysis to characterize:
-    - What type of structure caused the failure (clustering, symmetry, sparsity,
-      deception)
-    - Qualitative description of the weakness
-    - Estimated severity
+    This ensures:
+    - Descriptions are semantically diverse (not collapsed into 7 fixed buckets).
+    - Embedding-based similarity in FailureModeMemory has meaningful signal.
+    - The archive accumulates genuinely distinct discovered weaknesses.
 
-    Output: A structured FailureMode object.
+    The LLM is invoked via a lightweight direct HTTP call to the Anthropic API
+    (matching how AdvEoH already calls the LLM) rather than importing the full
+    LLM wrapper, to keep this module self-contained.
 
-    This implementation uses heuristic rules based on instance statistics and
-    performance data, which is task-agnostic and does not require an LLM call.
-    The ``refine_with_llm`` method can optionally use an LLM for richer
-    descriptions when one is available.
+    Fallback: if the LLM call fails (timeout, parse error, no API key), the
+    analyzer falls back to the statistical rule-based description so that the
+    FMA system degrades gracefully rather than crashing.
     """
 
-    # Pattern templates indexed by weakness category.
-    # The ``{stat_desc}`` placeholder is filled with numerical context.
-    PATTERNS: dict[str, str] = {
-        'clustering': (
-            "Nearest-neighbor collapse under clustered structure: "
-            "instances group points into dense clusters, causing greedy "
-            "construction heuristics to make locally optimal but globally "
-            "poor choices when bridging clusters. {stat_desc}"
-        ),
-        'symmetry': (
-            "Symmetry-induced oscillation: instances exhibit near-identical "
-            "alternatives at critical decision points, causing heuristic "
-            "selection to oscillate between near-equal options. {stat_desc}"
-        ),
-        'sparsity': (
-            "Exploration failure under sparse hub configuration: instances "
-            "place nodes in a hub-and-spoke layout where long edges connect "
-            "tight clusters, making myopic distance-based selection fail. "
-            "{stat_desc}"
-        ),
-        'deceptive': (
-            "Deceptive local-optimum trap: instances are structured so that "
-            "locally optimal decisions at early steps lead to globally poor "
-            "outcomes that cannot be recovered from. {stat_desc}"
-        ),
-        'uniform': (
-            "Near-uniform random structure that defeats heuristic by "
-            "lack of exploitable patterns: heuristic overfits to specific "
-            "structural assumptions that random instances violate. "
-            "{stat_desc}"
-        ),
-        'scale': (
-            "Scale-induced decision paralysis: instances with widely varying "
-            "magnitudes cause threshold-based heuristics to make poor "
-            "normalisation or scaling decisions. {stat_desc}"
-        ),
-        'adversarial': (
-            "Explicitly adversarial structure: instance contains purpose-built "
-            "patterns (corridors, dead ends, forced detours) that exploit "
-            "the heuristic's deterministic tie-breaking rule. {stat_desc}"
-        ),
-    }
+    # Prompt template for the LLM failure description call.
+    # Kept short (fits in ~200 tokens) to minimise latency and cost.
+    _PROMPT_TEMPLATE = textwrap.dedent("""\
+        You are analyzing why a heuristic solver failed on a combinatorial optimization instance.
 
-    CATEGORY_ORDER: list[str] = [
-        'adversarial', 'deceptive', 'clustering', 'symmetry',
-        'sparsity', 'scale', 'uniform',
-    ]
+        Task: {task}
 
-    def __init__(self, task: str = ''):
+        Instance structural statistics:
+        {stats_summary}
+
+        Generator strategy (what the generator tried to do):
+        {generator_description}
+
+        Heuristic strategy (what the solver tried to do):
+        {heuristic_description}
+
+        Performance gap: the heuristic achieved {heuristic_score:.4f} vs optimal {optimal_value:.4f} \
+(gap = {gap_pct:.1f}%).
+
+        In exactly ONE sentence (max 40 words), describe the specific structural weakness \
+of this instance that caused the heuristic to fail. Be precise and concrete — name the \
+structural pattern (e.g. clustered layout, symmetric alternatives, hub-spoke topology, \
+deceptive local optima, adversarial corridors). Do not start with "The instance".
+    """)
+
+    _SYSTEM_PROMPT = (
+        "You are a concise algorithmic analyst. "
+        "Respond with exactly one sentence describing a heuristic failure mode. "
+        "Do not add preamble, explanation, or punctuation beyond the sentence."
+    )
+
+    def __init__(
+        self,
+        task: str = '',
+        llm_call_fn=None,
+        model: str = 'claude-haiku-4-5-20251001',
+        max_tokens: int = 80,
+        timeout: float = 15.0,
+    ):
+        """
+        Args:
+            task: Short task description string (e.g. "TSP constructive heuristic").
+            llm_call_fn: Optional callable(prompt: str) -> str. If provided, used
+                instead of the built-in Anthropic API call. Useful for testing or
+                when the caller already has an LLM wrapper. Signature:
+                    fn(prompt: str, system: str) -> str | None
+            model: Anthropic model to use for failure description generation.
+                   Haiku is used by default — cheap and fast, ~1 call per failure.
+            max_tokens: Maximum tokens for the description (one sentence ≈ 40 words).
+            timeout: HTTP request timeout in seconds.
+        """
         self._task = task
+        self._llm_call_fn = llm_call_fn
+        self._model = model
+        self._max_tokens = max_tokens
+        self._timeout = timeout
 
     # ================================================================
-    #  Main analysis entry point
+    #  Main entry point
     # ================================================================
 
     def analyze(
@@ -95,20 +108,12 @@ class FailureAnalyzer:
     ) -> Optional[FailureMode]:
         """Analyze a heuristic failure and produce a structured FailureMode.
 
-        Args:
-            instance: The problem instance (task-native format).
-            heuristic_score: Score the heuristic achieved on this instance.
-            optimal_value: Optimal/reference score for this instance, if known.
-            generator_description: ``algorithm`` field of the generator.
-            heuristic_description: ``algorithm`` field of the heuristic.
-            generator_id: SHA1 of the generator function.
-            heuristic_id: SHA1 of the heuristic function.
-            generation: Current heuristic generation.
-            instance_seed: Seed used to generate this instance.
+        The description field is now LLM-generated (Fix 1).
 
-        Returns:
-            A FailureMode if the heuristic performed significantly worse
-            than optimal, or None if performance was acceptable.
+        Returns None if:
+        - heuristic_score is None
+        - performance gap is below threshold (< 5% relative gap)
+        - LLM call fails AND statistical fallback also fails
         """
         if heuristic_score is None:
             return None
@@ -117,13 +122,41 @@ class FailureAnalyzer:
         if delta <= 0:
             return None
 
-        severity = self._estimate_severity(delta, optimal)
-        category, stat_desc = self._categorize_failure(instance, heuristic_score, optimal)
+        # Relative gap check — skip trivially small failures
+        if optimal is not None and abs(optimal) > 1e-12:
+            rel_gap = delta / abs(optimal)
+            if rel_gap < 0.05:
+                return None
 
-        description = self._build_description(category, stat_desc)
+        severity = self._estimate_severity(delta, optimal)
+
+        # Compute instance statistics (used as LLM context)
+        stats = self._extract_instance_stats(instance)
+        stats_summary = self._format_stats(stats)
+
+        # --- Fix 1: LLM-generated description (primary) ---
+        gap_pct = (delta / abs(optimal) * 100) if optimal and abs(optimal) > 1e-12 else 0.0
+        prompt = self._PROMPT_TEMPLATE.format(
+            task=self._task or 'combinatorial optimization',
+            stats_summary=stats_summary,
+            generator_description=generator_description[:300] or 'not provided',
+            heuristic_description=heuristic_description[:300] or 'not provided',
+            heuristic_score=heuristic_score,
+            optimal_value=optimal_value if optimal_value is not None else heuristic_score,
+            gap_pct=gap_pct,
+        )
+
+        description = self._call_llm(prompt)
+
+        # --- Fallback: statistical rule-based description ---
+        if not description:
+            description = self._fallback_description(stats, heuristic_score, optimal_value)
+
+        if not description:
+            return None
 
         return FailureMode(
-            description=description,
+            description=description.strip(),
             generator_id=generator_id,
             heuristic_id=heuristic_id,
             generator_description=generator_description,
@@ -133,78 +166,165 @@ class FailureAnalyzer:
             performance_delta=delta,
             optimal_value=optimal or 1.0,
             severity=severity,
-            strength=0.5,  # initial; adjusted via memory updates
+            strength=0.5,
             coverage=0,
             instance_seed=instance_seed,
         )
 
     # ================================================================
-    #  Delta and severity
+    #  LLM call (Fix 1 core)
     # ================================================================
 
+    def _call_llm(self, prompt: str) -> Optional[str]:
+        """Call the LLM to generate a failure description.
+
+        Uses the injected llm_call_fn if provided, otherwise calls the
+        Anthropic API directly (same endpoint AdvEoH uses).
+        """
+        if self._llm_call_fn is not None:
+            try:
+                result = self._llm_call_fn(prompt, self._SYSTEM_PROMPT)
+                return self._clean_description(result) if result else None
+            except Exception:
+                return None
+
+        # Direct Anthropic API call
+        try:
+            import urllib.request
+            import os
+
+            api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+            if not api_key:
+                return None
+
+            payload = json.dumps({
+                'model': self._model,
+                'max_tokens': self._max_tokens,
+                'system': self._SYSTEM_PROMPT,
+                'messages': [{'role': 'user', 'content': prompt}],
+            }).encode('utf-8')
+
+            req = urllib.request.Request(
+                'https://api.anthropic.com/v1/messages',
+                data=payload,
+                headers={
+                    'Content-Type': 'application/json',
+                    'x-api-key': api_key,
+                    'anthropic-version': '2023-06-01',
+                },
+                method='POST',
+            )
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+
+            text = data.get('content', [{}])[0].get('text', '')
+            return self._clean_description(text)
+
+        except Exception:
+            return None
+
     @staticmethod
-    def _compute_delta(
+    def _clean_description(text: str) -> Optional[str]:
+        """Strip preamble, ensure single sentence, enforce max length."""
+        if not text:
+            return None
+        # Take first sentence only
+        for sep in ['. ', '.\n', '! ', '? ']:
+            if sep in text:
+                text = text.split(sep)[0] + '.'
+                break
+        text = text.strip().strip('"\'')
+        # Enforce 300-char hard cap (safety)
+        if len(text) > 300:
+            text = text[:297] + '...'
+        return text if len(text) > 10 else None
+
+    # ================================================================
+    #  Fallback: rule-based statistical description
+    # ================================================================
+
+    _FALLBACK_PATTERNS = {
+        'clustering': (
+            "Clustered structure causes nearest-neighbor heuristic to make locally "
+            "optimal intra-cluster decisions while failing at inter-cluster bridging "
+            "({stat_desc})."
+        ),
+        'symmetry': (
+            "Near-symmetric instance creates tie-breaking ambiguity at critical "
+            "decision points, causing the heuristic to oscillate without progress "
+            "({stat_desc})."
+        ),
+        'sparsity': (
+            "Hub-and-spoke layout with high pairwise distance variance exposes the "
+            "heuristic's myopic nearest-neighbor selection at long inter-hub edges "
+            "({stat_desc})."
+        ),
+        'scale': (
+            "Extreme value range causes threshold-based heuristic to apply "
+            "inappropriate normalisation, degrading decision quality ({stat_desc})."
+        ),
+        'deceptive': (
+            "Deceptive local-optimum structure forces early commitment to decisions "
+            "that are globally suboptimal and irrecoverable ({stat_desc})."
+        ),
+        'uniform': (
+            "Near-uniform structure without exploitable patterns causes the heuristic "
+            "to fail assumptions baked into its design ({stat_desc})."
+        ),
+    }
+
+    def _fallback_description(
+        self,
+        stats: dict,
         heuristic_score: float,
         optimal_value: Optional[float],
-    ) -> tuple[float, Optional[float]]:
-        """Compute how much worse the heuristic performed vs optimal.
-
-        Returns (delta, optimal) where delta > 0 means heuristic was worse.
-        If no optimal value is known, a heuristic-based estimate is used.
-        """
-        if optimal_value is not None and abs(optimal_value) > 1e-12:
-            delta = max(0.0, optimal_value - heuristic_score)
-            return delta, optimal_value
-
-        # Without optimal, use heuristic_score magnitude as baseline.
-        # Scores are typically non-negative and higher-is-better.
-        # A score near 0 or negative indicates failure.
-        if heuristic_score < 0:
-            return abs(heuristic_score), 0.0
-        # If positive but small relative to typical values, treat as mild failure.
-        return max(0.0, 1.0 - heuristic_score), 1.0
+    ) -> Optional[str]:
+        category, stat_desc = self._categorize_from_stats(stats, heuristic_score, optimal_value)
+        pattern = self._FALLBACK_PATTERNS.get(category, self._FALLBACK_PATTERNS['deceptive'])
+        return pattern.format(stat_desc=stat_desc)
 
     @staticmethod
-    def _estimate_severity(delta: float, optimal: Optional[float]) -> float:
-        """Map performance delta to a severity score in [0, 1]."""
-        if optimal is None or abs(optimal) < 1e-12:
-            return min(1.0, delta / 10.0)
+    def _categorize_from_stats(
+        stats: dict,
+        heuristic_score: float,
+        optimal_value: Optional[float],
+    ) -> tuple[str, str]:
+        cv_pairwise = stats.get('cv_pairwise', 0.0)
+        nn_skew = stats.get('nn_skew', 0.0)
+        cv_val = stats.get('cv', 0.0)
 
-        ratio = delta / abs(optimal)
-        if ratio >= 1.0:
-            return 1.0
-        if ratio >= 0.5:
-            return 0.8
-        if ratio >= 0.25:
-            return 0.5
-        if ratio >= 0.1:
-            return 0.3
-        return 0.1
+        if cv_pairwise > 0.5 and nn_skew < -0.5:
+            return 'clustering', f'cv_pairwise={cv_pairwise:.2f}, nn_skew={nn_skew:.2f}'
+        if cv_pairwise < 0.2 and abs(nn_skew) < 0.3:
+            return 'symmetry', f'cv_pairwise={cv_pairwise:.2f}, nn_skew={nn_skew:.2f}'
+        if cv_pairwise > 0.5 and nn_skew > 0.5:
+            return 'sparsity', f'cv_pairwise={cv_pairwise:.2f}, nn_skew={nn_skew:.2f}'
+        if cv_val > 2.0:
+            return 'scale', f'value_cv={cv_val:.2f}'
+
+        delta = 0.0
+        if optimal_value and abs(optimal_value) > 1e-12:
+            delta = (optimal_value - heuristic_score) / abs(optimal_value)
+        if delta > 0.5:
+            return 'deceptive', f'gap={delta*100:.1f}%'
+        return 'uniform', f'cv={cv_val:.2f}'
 
     # ================================================================
-    #  Failure categorization
+    #  Instance statistics extraction (unchanged from original)
     # ================================================================
 
     @staticmethod
     def _extract_instance_stats(instance: Any) -> dict:
-        """Extract structural statistics from an instance for failure analysis.
-
-        This is task-agnostic: works with numpy arrays, tuples of arrays,
-        and dict-like structures.
-        """
         stats = {}
-
         try:
             import numpy as np
 
-            # Helper to extract coordinates from various instance formats
-            def _to_float_array(data) -> Optional[np.ndarray]:
+            def _to_float_array(data):
                 if data is None:
                     return None
                 if isinstance(data, np.ndarray):
                     return data
                 if isinstance(data, (tuple, list)):
-                    # Try first element if it's a tuple of arrays
                     for item in data:
                         arr = np.asarray(item)
                         if arr.ndim >= 1 and arr.size > 0:
@@ -217,10 +337,7 @@ class FailureAnalyzer:
 
             flat = arr.ravel()
             stats['n_elements'] = flat.size
-            stats['n_nan'] = int(np.isnan(flat).sum())
-            stats['n_inf'] = int(np.isinf(flat).sum())
-            stats['finite'] = np.isfinite(flat)
-            finite_vals = flat[stats['finite']]
+            finite_vals = flat[np.isfinite(flat)]
 
             if finite_vals.size > 0:
                 stats['min'] = float(finite_vals.min())
@@ -228,20 +345,17 @@ class FailureAnalyzer:
                 stats['mean'] = float(finite_vals.mean())
                 stats['std'] = float(finite_vals.std())
                 stats['range'] = stats['max'] - stats['min']
-
-                # Coefficient of variation (normalised dispersion)
                 if abs(stats['mean']) > 1e-12:
                     stats['cv'] = stats['std'] / abs(stats['mean'])
                 else:
                     stats['cv'] = stats['std']
 
-                # For 2D coordinates, compute clustering metrics
                 if arr.ndim == 2 and arr.shape[1] == 2 and finite_vals.size >= 4:
                     coords = arr[~np.isnan(arr).any(axis=1) & ~np.isinf(arr).any(axis=1)]
                     if coords.shape[0] >= 4:
-                        # Pairwise distances
-                        from scipy.spatial.distance import pdist  # noqa
                         try:
+                            from scipy.spatial.distance import pdist
+                            from scipy.spatial import KDTree
                             dists = pdist(coords)
                             stats['mean_pairwise_dist'] = float(dists.mean())
                             stats['std_pairwise_dist'] = float(dists.std())
@@ -249,11 +363,9 @@ class FailureAnalyzer:
                                 stats['std_pairwise_dist'] / stats['mean_pairwise_dist']
                                 if stats['mean_pairwise_dist'] > 1e-12 else 0
                             )
-                            # Skewness of nearest-neighbour distances
-                            from scipy.spatial import KDTree  # noqa
                             tree = KDTree(coords)
                             nn_dists, _ = tree.query(coords, k=2)
-                            nn_dists = nn_dists[:, 1]  # exclude self
+                            nn_dists = nn_dists[:, 1]
                             if nn_dists.std() > 0:
                                 stats['nn_skew'] = float(
                                     np.mean(((nn_dists - nn_dists.mean()) / nn_dists.std()) ** 3)
@@ -264,98 +376,57 @@ class FailureAnalyzer:
                             pass
         except ImportError:
             pass
-
         return stats
 
-    def _categorize_failure(
-        self,
-        instance: Any,
+    @staticmethod
+    def _format_stats(stats: dict) -> str:
+        """Format instance statistics as a compact human-readable summary."""
+        parts = []
+        if 'n_elements' in stats:
+            parts.append(f'n={stats["n_elements"]}')
+        if 'cv_pairwise' in stats:
+            parts.append(f'cv_pairwise={stats["cv_pairwise"]:.2f}')
+        if 'nn_skew' in stats:
+            parts.append(f'nn_skew={stats["nn_skew"]:.2f}')
+        if 'cv' in stats:
+            parts.append(f'value_cv={stats["cv"]:.2f}')
+        if 'range' in stats:
+            parts.append(f'range={stats["range"]:.3f}')
+        return ', '.join(parts) if parts else 'no structural stats available'
+
+    # ================================================================
+    #  Delta and severity (unchanged)
+    # ================================================================
+
+    @staticmethod
+    def _compute_delta(
         heuristic_score: float,
         optimal_value: Optional[float],
-    ) -> tuple[str, str]:
-        """Determine the most likely failure category and a statistical
-        description string.
+    ) -> tuple[float, Optional[float]]:
+        if optimal_value is not None and abs(optimal_value) > 1e-12:
+            delta = max(0.0, optimal_value - heuristic_score)
+            return delta, optimal_value
+        if heuristic_score < 0:
+            return abs(heuristic_score), 0.0
+        return max(0.0, 1.0 - heuristic_score), 1.0
 
-        Returns (category_key, stat_description).
-        """
-        stats = self._extract_instance_stats(instance)
-
-        # Fallback if we have no instance stats to analyse
-        if not stats:
-            return 'adversarial', 'instance structure not analyzable with current statistics'
-
-        stat_parts = []
-
-        # --- Clustering detection: high CV of pairwise distances, negative NN skew ---
-        cv_pairwise = stats.get('cv_pairwise', 0)
-        nn_skew = stats.get('nn_skew', 0)
-        if cv_pairwise > 0.5 and nn_skew < -0.5:
-            stat_parts.append(
-                f'high pairwise distance variation (CV={cv_pairwise:.2f}) '
-                f'with negative NN skew ({nn_skew:.2f})'
-            )
-            stat_desc = '; '.join(stat_parts) if stat_parts else 'statistical clustering indicators'
-            return 'clustering', stat_desc
-
-        # --- Symmetry detection: low CV of pairwise distances + many near-equal NN ---
-        if cv_pairwise < 0.2 and nn_skew is not None and abs(nn_skew) < 0.3:
-            stat_parts.append(
-                f'low pairwise distance variation (CV={cv_pairwise:.2f}) '
-                f'with symmetric NN distribution (skew={nn_skew:.2f})'
-            )
-            stat_desc = '; '.join(stat_parts) if stat_parts else 'statistical symmetry indicators'
-            return 'symmetry', stat_desc
-
-        # --- Sparsity detection: high CV, positive NN skew ---
-        if cv_pairwise > 0.5 and nn_skew > 0.5:
-            stat_parts.append(
-                f'high pairwise distance variation (CV={cv_pairwise:.2f}) '
-                f'with positive NN skew ({nn_skew:.2f})'
-            )
-            stat_desc = '; '.join(stat_parts) if stat_parts else 'sparse hub-like structure'
-            return 'sparsity', stat_desc
-
-        # --- Scale detection: high coefficient of variation in values ---
-        cv_val = stats.get('cv', 0)
-        if cv_val > 2.0:
-            stat_parts.append(
-                f'extreme value range (min={stats.get("min", 0):.3f}, '
-                f'max={stats.get("max", 0):.3f}, CV={cv_val:.2f})'
-            )
-            stat_desc = '; '.join(stat_parts)
-            return 'scale', stat_desc
-
-        # --- Deception: large performance gap with moderate structural variation ---
-        delta, optimal = self._compute_delta(heuristic_score, optimal_value)
-        ratio = delta / abs(optimal) if optimal and abs(optimal) > 1e-12 else delta
-        if ratio > 0.5:
-            stat_parts.append(
-                f'large performance gap (heuristic={heuristic_score:.4f}, '
-                f'optimal={optimal_value if optimal_value else "N/A"})'
-            )
-            stat_desc = '; '.join(stat_parts) if stat_parts else 'disproportionate performance gap'
-            return 'deceptive', stat_desc
-
-        # --- Default: near-uniform ---
-        if stat_parts:
-            stat_desc = '; '.join(stat_parts)
-        else:
-            stat_desc = (
-                f'values in [{stats.get("min", 0):.3f}, {stats.get("max", 0):.3f}], '
-                f'std={stats.get("std", 0):.3f}'
-            )
-        return 'uniform', stat_desc
+    @staticmethod
+    def _estimate_severity(delta: float, optimal: Optional[float]) -> float:
+        if optimal is None or abs(optimal) < 1e-12:
+            return min(1.0, delta / 10.0)
+        ratio = delta / abs(optimal)
+        if ratio >= 1.0:
+            return 1.0
+        if ratio >= 0.5:
+            return 0.8
+        if ratio >= 0.25:
+            return 0.5
+        if ratio >= 0.1:
+            return 0.3
+        return 0.1
 
     # ================================================================
-    #  Description building
-    # ================================================================
-
-    def _build_description(self, category: str, stat_desc: str) -> str:
-        pattern = self.PATTERNS.get(category, self.PATTERNS['adversarial'])
-        return pattern.format(stat_desc=stat_desc)
-
-    # ================================================================
-    #  Convenience: batch analysis
+    #  Batch convenience
     # ================================================================
 
     def analyze_batch(
@@ -363,18 +434,6 @@ class FailureAnalyzer:
         evaluation_results: List[dict],
         generation: int,
     ) -> List[FailureMode]:
-        """Analyze a batch of evaluation results.
-
-        Each entry in evaluation_results should be a dict with keys:
-          - instance: the instance data
-          - heuristic_score: score the heuristic achieved
-          - optimal_value: optimal/reference score (optional)
-          - generator_description (optional)
-          - heuristic_description (optional)
-          - generator_id (optional)
-          - heuristic_id (optional)
-          - instance_seed (optional)
-        """
         modes = []
         for result in evaluation_results:
             mode = self.analyze(
