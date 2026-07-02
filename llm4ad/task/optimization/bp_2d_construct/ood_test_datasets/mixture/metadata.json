@@ -1,0 +1,67 @@
+{
+  "task": "bp_2d_construct",
+  "suite": "mixture",
+  "split": "ood_test",
+  "reference_split": "train (ID)",
+  "seed": 20260702,
+  "families": [
+    "slender",
+    "large_squares",
+    "bimodal",
+    "small_dense"
+  ],
+  "datasets": [
+    {
+      "size": 50,
+      "path": "D:\\LLM4AD\\llm4ad\\task\\optimization\\bp_2d_construct\\ood_test_datasets\\mixture\\size_50.pkl",
+      "n_instances": 64,
+      "sha256": "afdc5c8dd1bd46c55f431715594e82346dd8d9ce301448a8728cc70df6dda05e",
+      "bytes": 19732,
+      "distribution_counts": {
+        "bimodal": 16,
+        "large_squares": 16,
+        "slender": 16,
+        "small_dense": 16
+      }
+    },
+    {
+      "size": 100,
+      "path": "D:\\LLM4AD\\llm4ad\\task\\optimization\\bp_2d_construct\\ood_test_datasets\\mixture\\size_100.pkl",
+      "n_instances": 64,
+      "sha256": "8a9ea581aa0666458f4abe320602f8f666e3ae329a67f3c0747b9ae36e7caefa",
+      "bytes": 38932,
+      "distribution_counts": {
+        "bimodal": 16,
+        "large_squares": 16,
+        "slender": 16,
+        "small_dense": 16
+      }
+    },
+    {
+      "size": 200,
+      "path": "D:\\LLM4AD\\llm4ad\\task\\optimization\\bp_2d_construct\\ood_test_datasets\\mixture\\size_200.pkl",
+      "n_instances": 64,
+      "sha256": "8205229694167efe4919dabda90426f6da985407ecb9cbe9f405bb0ffed5c394",
+      "bytes": 77341,
+      "distribution_counts": {
+        "bimodal": 16,
+        "large_squares": 16,
+        "slender": 16,
+        "small_dense": 16
+      }
+    },
+    {
+      "size": 500,
+      "path": "D:\\LLM4AD\\llm4ad\\task\\optimization\\bp_2d_construct\\ood_test_datasets\\mixture\\size_500.pkl",
+      "n_instances": 64,
+      "sha256": "fdec9e8d140900fc18505fe366f28ef38772251d629d75cd59a723bdeb1859f6",
+      "bytes": 192739,
+      "distribution_counts": {
+        "bimodal": 16,
+        "large_squares": 16,
+        "slender": 16,
+        "small_dense": 16
+      }
+    }
+  ]
+}

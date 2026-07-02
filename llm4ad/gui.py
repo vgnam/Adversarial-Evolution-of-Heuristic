@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
 import pytz
 import inspect
 import llm4ad
-from llm4ad.task.optimization.fixed_test_eval import evaluate_best_on_fixed_test_datasets
+from llm4ad.task.optimization.oracle_ood_eval import evaluate_final_population_oracle_ood
 
 
 # Dynamically import all usable classes from the 'llm4ad' package
@@ -132,13 +132,15 @@ def main_gui(llm: dict,
                               **method_params)
     method_case.run()
     try:
-        evaluate_best_on_fixed_test_datasets(
+        evaluate_final_population_oracle_ood(
             evaluation_cls=eval_case.__class__,
             evaluation_params=evaluation_params,
             log_dir=getattr(profiler_instance, '_log_dir', profiler['log_dir']),
+            method_name=method_name,
+            k=10,
         )
     except Exception as exc:
-        print(f'[Eval] Skipped fixed test evaluation: {type(exc).__name__}: {exc}')
+        print(f'[Eval] Skipped OOD Oracle@10 evaluation: {type(exc).__name__}: {exc}')
 
 
 if __name__ == '__main__':

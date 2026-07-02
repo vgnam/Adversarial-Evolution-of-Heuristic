@@ -1,0 +1,67 @@
+{
+  "task": "knapsack_construct",
+  "suite": "mixture",
+  "split": "ood_test",
+  "reference_split": "train (ID)",
+  "seed": 20260702,
+  "families": [
+    "strongly_correlated",
+    "inverse_correlated",
+    "bimodal",
+    "heavy_tailed"
+  ],
+  "datasets": [
+    {
+      "size": 20,
+      "path": "D:\\LLM4AD\\llm4ad\\task\\optimization\\knapsack_construct\\ood_test_datasets\\mixture\\size_20.pkl",
+      "n_instances": 64,
+      "sha256": "167d57721b3f7dd43d751b3f99d47e7f52b2258c7981bcb8866e739cbfcc26a6",
+      "bytes": 5904,
+      "distribution_counts": {
+        "bimodal": 16,
+        "heavy_tailed": 16,
+        "inverse_correlated": 16,
+        "strongly_correlated": 16
+      }
+    },
+    {
+      "size": 50,
+      "path": "D:\\LLM4AD\\llm4ad\\task\\optimization\\knapsack_construct\\ood_test_datasets\\mixture\\size_50.pkl",
+      "n_instances": 64,
+      "sha256": "526cb928c01c16c5ebee0f31d416048acfaba0ef48801164f489f60969da8cbf",
+      "bytes": 13584,
+      "distribution_counts": {
+        "bimodal": 16,
+        "heavy_tailed": 16,
+        "inverse_correlated": 16,
+        "strongly_correlated": 16
+      }
+    },
+    {
+      "size": 100,
+      "path": "D:\\LLM4AD\\llm4ad\\task\\optimization\\knapsack_construct\\ood_test_datasets\\mixture\\size_100.pkl",
+      "n_instances": 64,
+      "sha256": "32337b521e8334c01da34ece89d9b33db3b3e7d835548f38082a4448800b350b",
+      "bytes": 26384,
+      "distribution_counts": {
+        "bimodal": 16,
+        "heavy_tailed": 16,
+        "inverse_correlated": 16,
+        "strongly_correlated": 16
+      }
+    },
+    {
+      "size": 200,
+      "path": "D:\\LLM4AD\\llm4ad\\task\\optimization\\knapsack_construct\\ood_test_datasets\\mixture\\size_200.pkl",
+      "n_instances": 64,
+      "sha256": "471854580da9154df42729d1b455bc226f199452ac630d0a0f03c780177a4297",
+      "bytes": 51984,
+      "distribution_counts": {
+        "bimodal": 16,
+        "heavy_tailed": 16,
+        "inverse_correlated": 16,
+        "strongly_correlated": 16
+      }
+    }
+  ]
+}

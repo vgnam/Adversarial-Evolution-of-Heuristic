@@ -1,0 +1,67 @@
+{
+  "task": "cflp_construct",
+  "suite": "mixture",
+  "split": "ood_test",
+  "reference_split": "train (ID)",
+  "seed": 20260702,
+  "families": [
+    "tight_capacity",
+    "clustered_cost",
+    "bimodal_demand",
+    "sparse_cheap_edges"
+  ],
+  "datasets": [
+    {
+      "size": 20,
+      "path": "D:\\LLM4AD\\llm4ad\\task\\optimization\\cflp_construct\\ood_test_datasets\\mixture\\size_20.pkl",
+      "n_instances": 64,
+      "sha256": "bdd642b944d6b0275b6ae594751f48c3ac91f9d2f0e797ac584d5e00875be08b",
+      "bytes": 62918,
+      "distribution_counts": {
+        "bimodal_demand": 16,
+        "clustered_cost": 16,
+        "sparse_cheap_edges": 16,
+        "tight_capacity": 16
+      }
+    },
+    {
+      "size": 50,
+      "path": "D:\\LLM4AD\\llm4ad\\task\\optimization\\cflp_construct\\ood_test_datasets\\mixture\\size_50.pkl",
+      "n_instances": 64,
+      "sha256": "75e92bb765b0d7b197aa9fc94127d5bcc335191520deb2573491ee03d783fc10",
+      "bytes": 347123,
+      "distribution_counts": {
+        "bimodal_demand": 16,
+        "clustered_cost": 16,
+        "sparse_cheap_edges": 16,
+        "tight_capacity": 16
+      }
+    },
+    {
+      "size": 100,
+      "path": "D:\\LLM4AD\\llm4ad\\task\\optimization\\cflp_construct\\ood_test_datasets\\mixture\\size_100.pkl",
+      "n_instances": 64,
+      "sha256": "a0a5a83b17c3404e774a52ee07acb4ffdb09cc0b2a3e40ae7519d5571b3eb879",
+      "bytes": 1332858,
+      "distribution_counts": {
+        "bimodal_demand": 16,
+        "clustered_cost": 16,
+        "sparse_cheap_edges": 16,
+        "tight_capacity": 16
+      }
+    },
+    {
+      "size": 200,
+      "path": "D:\\LLM4AD\\llm4ad\\task\\optimization\\cflp_construct\\ood_test_datasets\\mixture\\size_200.pkl",
+      "n_instances": 64,
+      "sha256": "a90d823a3bb571f1697c43e2a535e0f0afc6067737cc1e0cc45478acaa071bbf",
+      "bytes": 5224589,
+      "distribution_counts": {
+        "bimodal_demand": 16,
+        "clustered_cost": 16,
+        "sparse_cheap_edges": 16,
+        "tight_capacity": 16
+      }
+    }
+  ]
+}

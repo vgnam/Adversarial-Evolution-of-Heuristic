@@ -21,7 +21,7 @@ def main():
                  evaluation=task,
                  max_sample_nums=20,
                  max_generations=5,
-                 pop_size=2,
+                  pop_size=10,
                  num_samplers=1,
                  num_evaluators=1)
 

@@ -4,6 +4,7 @@ import concurrent.futures
 import copy
 import hashlib
 import math
+import os
 import random
 import time
 import traceback
@@ -361,6 +362,10 @@ class AdvEoH:
         self._skip_initial_instance_population_once = resume_mode
 
         # --- FMA: Failure-Mode Accumulation ---
+        if fma_archive_path is None and profiler is not None:
+            log_dir = getattr(profiler, '_log_dir', None)
+            if log_dir:
+                fma_archive_path = os.path.join(log_dir, 'failure_memory.json')
         self._fma_memory = FailureModeMemory(path=fma_archive_path)
         self._fma_analyzer = FailureAnalyzer(task=self._task_description_heu_str[:64])
         # Track which failure signatures each heuristic has survived
@@ -407,14 +412,10 @@ class AdvEoH:
         Returns the text response or None on failure.
         """
         try:
-            # Use the heuristic LLM (llm_heu) which is already authenticated.
-            # AdvEoHSampler exposes the underlying LLM via self._sampler_heu.llm
             llm = self._sampler_heu.llm
-            response = llm.generate(
-                prompt=prompt,
-                system=system,
-                max_tokens=80,
-            )
+            # LLM's portable interface is draw_sample(); not every backend
+            # implements provider-specific generate/system arguments.
+            response = llm.draw_sample(f'{system}\n\n{prompt}')
             return response.strip() if response else None
         except Exception:
             return None
@@ -586,52 +587,6 @@ class AdvEoH:
     
 
 
-    def _fma_maybe_record_failure(self,
-                                   instance: any,
-                                   heuristic_score: float,
-                                   optimal_value: Optional[float],
-                                   generator_func: Function,
-                                   heuristic_func: Function,
-                                   generation: int,
-                                   instance_seed: int):
-        """Run failure analysis on a single (instance, heuristic) pair and
-        record any discovered failure mode in memory."""
-        if not self._use_fma:
-            return
-
-        delta = (optimal_value - heuristic_score) if optimal_value is not None else None
-        if delta is not None and delta < self._fma_min_delta:
-            return
-
-        mode = self._fma_analyzer.analyze(
-            instance=instance,
-            heuristic_score=heuristic_score,
-            optimal_value=optimal_value,
-            generator_description=getattr(generator_func, 'algorithm', ''),
-            heuristic_description=getattr(heuristic_func, 'algorithm', ''),
-            generator_id=self._fma_individual_id(generator_func),
-            heuristic_id=self._fma_individual_id(heuristic_func),
-            generation=generation,
-            instance_seed=instance_seed,
-        )
-        if mode is not None:
-            added = self._fma_memory.add(mode)
-            if self._debug_mode and added:
-                print(f'  [FMA] New failure mode: {mode.description[:80]}...')
-            # Prune memory if over capacity
-            if len(self._fma_memory) > self._fma_memory_size:
-                all_modes = self._fma_memory.get_all()
-                # Keep the most threatening ones
-                sorted_modes = sorted(
-                    all_modes,
-                    key=lambda m: (m.strength, m.normalized_delta),
-                    reverse=True,
-                )
-                self._fma_memory._modes = {
-                    m.signature: m for m in sorted_modes[:self._fma_memory_size]
-                }
-                self._fma_memory._save()
-
     def _fma_collect_failure_analysis(self):
         """Process any pending failure analysis items accumulated during
         instance scoring."""
@@ -673,33 +628,6 @@ class AdvEoH:
         heu_key = self._fma_heuristic_coverage_key(heu_func)
         survived = self._heuristic_coverage.get(heu_key, set())
         return self._fma_memory.coverage_fraction(survived)
-
-    def _fma_mark_heuristic_survived(self, heu_func: Function,
-                                      instance: any,
-                                      heuristic_score: float,
-                                      optimal_value: Optional[float]):
-        """If a heuristic performed well on an instance that corresponds to
-        an archived failure mode, mark it as covered."""
-        if not self._use_fma or len(self._fma_memory) == 0:
-            return
-        if heuristic_score is None:
-            return
-
-        # Estimate which failure mode this instance might correspond to
-        # by checking similarity with archived mode descriptions
-        for mode in self._fma_memory.get_all():
-            if mode.strength < 0.2:
-                continue
-            # Check if performance is good enough to be "surviving" this failure
-            if optimal_value is not None and abs(optimal_value) > 1e-12:
-                ratio = (optimal_value - heuristic_score) / abs(optimal_value)
-                if ratio < self._fma_min_delta:  # heuristic did well
-                    heu_key = self._fma_heuristic_coverage_key(heu_func)
-                    if heu_key not in self._heuristic_coverage:
-                        self._heuristic_coverage[heu_key] = set()
-                    if mode.signature not in self._heuristic_coverage[heu_key]:
-                        self._heuristic_coverage[heu_key].add(mode.signature)
-                        self._fma_memory.mark_covered(mode.signature)
 
     def _fma_failure_descriptions_for_prompt(self) -> list[str]:
         """Get the top-k most threatening failure descriptions for prompt
@@ -989,59 +917,6 @@ class AdvEoH:
         except Exception:
             self._cache_heuristic_score(heu_func, instances, None)
             return None
-
-    # ================================================================
-    #  FMA-extended instance scoring
-    # ================================================================
-
-    def _score_instances_against_reference(
-            self,
-            instances: list,
-            reference_heuristics: list[Function],
-            *,
-            _generation: int = 0,
-            _generator_func: Optional[Function] = None,
-    ) -> float | None:
-        """Minimax generator score: -mean_seed(max_h score(h, instance_seed)).
-
-        When FMA is enabled, also queues failure analysis for each
-        (heuristic, instance) pair where performance is poor.
-        """
-        if not instances or not reference_heuristics:
-            return None
-
-        per_seed_best_scores = []
-        for inst_idx, inst in enumerate(instances):
-            seed_scores = []
-            for heu_func in reference_heuristics:
-                score = self._evaluate_heuristic_function(heu_func, instances=[inst])
-                if score is not None:
-                    seed_scores.append(score)
-
-                    # --- FMA: queue failure analysis on poorly-performing heuristics ---
-                    if self._use_fma and _generator_func is not None and score < 0.5:
-                        with self._pending_failure_lock:
-                            self._pending_failure_analysis.append({
-                                'instance': inst,
-                                'heuristic_score': score,
-                                'optimal_value': None,
-                                'generator_func': _generator_func,
-                                'heuristic_func': heu_func,
-                                'generation': _generation,
-                                'instance_seed': inst_idx,
-                            })
-                    # --- FMA: mark heuristic as survived if it performed well ---
-                    if self._use_fma:
-                        self._fma_mark_heuristic_survived(
-                            heu_func, inst, score, optimal_value=None
-                        )
-
-            if seed_scores:
-                per_seed_best_scores.append(max(seed_scores))
-
-        if not per_seed_best_scores:
-            return None
-        return -float(np.mean(per_seed_best_scores))
 
     @staticmethod
     def _dedupe_functions(funcs: list[Function]) -> list[Function]:

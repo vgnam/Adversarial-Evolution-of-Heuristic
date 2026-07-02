@@ -1,0 +1,67 @@
+{
+  "task": "jssp_construct",
+  "suite": "mixture",
+  "split": "ood_test",
+  "reference_split": "train (ID)",
+  "seed": 20260702,
+  "families": [
+    "bimodal",
+    "machine_bottleneck",
+    "job_correlated",
+    "heavy_tailed"
+  ],
+  "datasets": [
+    {
+      "size": 20,
+      "path": "D:\\LLM4AD\\llm4ad\\task\\optimization\\jssp_construct\\ood_test_datasets\\mixture\\size_20.pkl",
+      "n_instances": 64,
+      "sha256": "21ecff697626784eba016b537687ca80449e0c663e8a6e4fb76d3f046257c58e",
+      "bytes": 31376,
+      "distribution_counts": {
+        "bimodal": 16,
+        "heavy_tailed": 16,
+        "job_correlated": 16,
+        "machine_bottleneck": 16
+      }
+    },
+    {
+      "size": 50,
+      "path": "D:\\LLM4AD\\llm4ad\\task\\optimization\\jssp_construct\\ood_test_datasets\\mixture\\size_50.pkl",
+      "n_instances": 64,
+      "sha256": "fd23a682f0483afa3a2944f4058682ac78a31b98680d8df94bc9034e9c0e12a8",
+      "bytes": 77465,
+      "distribution_counts": {
+        "bimodal": 16,
+        "heavy_tailed": 16,
+        "job_correlated": 16,
+        "machine_bottleneck": 16
+      }
+    },
+    {
+      "size": 100,
+      "path": "D:\\LLM4AD\\llm4ad\\task\\optimization\\jssp_construct\\ood_test_datasets\\mixture\\size_100.pkl",
+      "n_instances": 64,
+      "sha256": "c79f309accdb223862624d661312278fa986634fce75473a5284901d75156379",
+      "bytes": 154274,
+      "distribution_counts": {
+        "bimodal": 16,
+        "heavy_tailed": 16,
+        "job_correlated": 16,
+        "machine_bottleneck": 16
+      }
+    },
+    {
+      "size": 200,
+      "path": "D:\\LLM4AD\\llm4ad\\task\\optimization\\jssp_construct\\ood_test_datasets\\mixture\\size_200.pkl",
+      "n_instances": 64,
+      "sha256": "80a8fd060e555a4b2158f58771eadc6d9220ffa9ccc74aac2dd59eecfc37dad8",
+      "bytes": 307892,
+      "distribution_counts": {
+        "bimodal": 16,
+        "heavy_tailed": 16,
+        "job_correlated": 16,
+        "machine_bottleneck": 16
+      }
+    }
+  ]
+}

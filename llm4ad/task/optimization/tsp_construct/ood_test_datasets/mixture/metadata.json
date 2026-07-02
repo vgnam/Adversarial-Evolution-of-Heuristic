@@ -1,0 +1,77 @@
+{
+  "task": "tsp_construct",
+  "suite": "mixture",
+  "split": "ood_test",
+  "reference_split": "train (ID)",
+  "seed": 20260702,
+  "families": [
+    "clustered",
+    "concentric_rings",
+    "boundary",
+    "crossing_diagonals",
+    "radial_spokes",
+    "dense_core_outliers"
+  ],
+  "datasets": [
+    {
+      "size": 20,
+      "path": "D:\\LLM4AD\\llm4ad\\task\\optimization\\tsp_construct\\ood_test_datasets\\mixture\\size_20.pkl",
+      "n_instances": 64,
+      "sha256": "d049a1df8983033ceba0f308c91fc857c398ae073fbdc85105736b9003f558b0",
+      "bytes": 228996,
+      "distribution_counts": {
+        "boundary": 11,
+        "clustered": 11,
+        "concentric_rings": 11,
+        "crossing_diagonals": 11,
+        "dense_core_outliers": 10,
+        "radial_spokes": 10
+      }
+    },
+    {
+      "size": 50,
+      "path": "D:\\LLM4AD\\llm4ad\\task\\optimization\\tsp_construct\\ood_test_datasets\\mixture\\size_50.pkl",
+      "n_instances": 64,
+      "sha256": "062d4af159d5ee5575b040490bbad65a3824cace2522b4b272dcad320879b2ed",
+      "bytes": 1335033,
+      "distribution_counts": {
+        "boundary": 11,
+        "clustered": 11,
+        "concentric_rings": 11,
+        "crossing_diagonals": 11,
+        "dense_core_outliers": 10,
+        "radial_spokes": 10
+      }
+    },
+    {
+      "size": 100,
+      "path": "D:\\LLM4AD\\llm4ad\\task\\optimization\\tsp_construct\\ood_test_datasets\\mixture\\size_100.pkl",
+      "n_instances": 64,
+      "sha256": "4e3fece72dbcf67bc640911720b853591e607f982f8e1ce9c07dd8d489179c3e",
+      "bytes": 5226665,
+      "distribution_counts": {
+        "boundary": 11,
+        "clustered": 11,
+        "concentric_rings": 11,
+        "crossing_diagonals": 11,
+        "dense_core_outliers": 10,
+        "radial_spokes": 10
+      }
+    },
+    {
+      "size": 200,
+      "path": "D:\\LLM4AD\\llm4ad\\task\\optimization\\tsp_construct\\ood_test_datasets\\mixture\\size_200.pkl",
+      "n_instances": 64,
+      "sha256": "0da7e35cf6f6a222b7b5497ffa2ebe6d778eb2780398e5ea89d314a121226d47",
+      "bytes": 20689065,
+      "distribution_counts": {
+        "boundary": 11,
+        "clustered": 11,
+        "concentric_rings": 11,
+        "crossing_diagonals": 11,
+        "dense_core_outliers": 10,
+        "radial_spokes": 10
+      }
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "task": "set_cover_construct",
+  "suite": "mixture",
+  "split": "ood_test",
+  "reference_split": "train (ID)",
+  "seed": 20260702,
+  "families": [
+    "sparse",
+    "dense",
+    "clustered",
+    "power_law"
+  ],
+  "datasets": [
+    {
+      "size": 20,
+      "path": "D:\\LLM4AD\\llm4ad\\task\\optimization\\set_cover_construct\\ood_test_datasets\\mixture\\size_20.pkl",
+      "n_instances": 64,
+      "sha256": "22338687a17754480bd02e9d0bee8f7d63a7f7f53c301ef374934d18552b25f9",
+      "bytes": 22578,
+      "distribution_counts": {
+        "clustered": 16,
+        "dense": 16,
+        "power_law": 16,
+        "sparse": 16
+      }
+    },
+    {
+      "size": 50,
+      "path": "D:\\LLM4AD\\llm4ad\\task\\optimization\\set_cover_construct\\ood_test_datasets\\mixture\\size_50.pkl",
+      "n_instances": 64,
+      "sha256": "9ff1cecf82e188f9870c0099deec452ba360b06ce9243f7defef15f32d342d81",
+      "bytes": 101506,
+      "distribution_counts": {
+        "clustered": 16,
+        "dense": 16,
+        "power_law": 16,
+        "sparse": 16
+      }
+    },
+    {
+      "size": 100,
+      "path": "D:\\LLM4AD\\llm4ad\\task\\optimization\\set_cover_construct\\ood_test_datasets\\mixture\\size_100.pkl",
+      "n_instances": 64,
+      "sha256": "192c56f4cc1b6a9f9864de86f873bc96cf761a187d60440dab632df033572745",
+      "bytes": 351892,
+      "distribution_counts": {
+        "clustered": 16,
+        "dense": 16,
+        "power_law": 16,
+        "sparse": 16
+      }
+    },
+    {
+      "size": 200,
+      "path": "D:\\LLM4AD\\llm4ad\\task\\optimization\\set_cover_construct\\ood_test_datasets\\mixture\\size_200.pkl",
+      "n_instances": 64,
+      "sha256": "c435c4fa63c7c57ac86470bb5c094d442df5f597c1888852fde8a080c37f2c76",
+      "bytes": 1299831,
+      "distribution_counts": {
+        "clustered": 16,
+        "dense": 16,
+        "power_law": 16,
+        "sparse": 16
+      }
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "task": "qap_construct",
+  "suite": "mixture",
+  "split": "ood_test",
+  "reference_split": "train (ID)",
+  "seed": 20260702,
+  "families": [
+    "sparse",
+    "block",
+    "heavy_tailed",
+    "geometric"
+  ],
+  "datasets": [
+    {
+      "size": 10,
+      "path": "D:\\LLM4AD\\llm4ad\\task\\optimization\\qap_construct\\ood_test_datasets\\mixture\\size_10.pkl",
+      "n_instances": 64,
+      "sha256": "0f04131d79788e5b240e7a1d4724232b9d098d0d578838e53e766bd5d332e40e",
+      "bytes": 54889,
+      "distribution_counts": {
+        "block": 16,
+        "geometric": 16,
+        "heavy_tailed": 16,
+        "sparse": 16
+      }
+    },
+    {
+      "size": 20,
+      "path": "D:\\LLM4AD\\llm4ad\\task\\optimization\\qap_construct\\ood_test_datasets\\mixture\\size_20.pkl",
+      "n_instances": 64,
+      "sha256": "f6efa7585d22b37ea3018106ee7955be1d65c1f78e3279a27c6c70264b0335d6",
+      "bytes": 208516,
+      "distribution_counts": {
+        "block": 16,
+        "geometric": 16,
+        "heavy_tailed": 16,
+        "sparse": 16
+      }
+    },
+    {
+      "size": 50,
+      "path": "D:\\LLM4AD\\llm4ad\\task\\optimization\\qap_construct\\ood_test_datasets\\mixture\\size_50.pkl",
+      "n_instances": 64,
+      "sha256": "cd4da59d8383530160f9d03dd90af5dcd37a896ccfaab44ce7deaa82609abd55",
+      "bytes": 1283851,
+      "distribution_counts": {
+        "block": 16,
+        "geometric": 16,
+        "heavy_tailed": 16,
+        "sparse": 16
+      }
+    },
+    {
+      "size": 100,
+      "path": "D:\\LLM4AD\\llm4ad\\task\\optimization\\qap_construct\\ood_test_datasets\\mixture\\size_100.pkl",
+      "n_instances": 64,
+      "sha256": "ba5b21dc05a9ea3abe36eb68602edddf2b051b0ff65aaf40c1d632c9796b19ba",
+      "bytes": 5124265,
+      "distribution_counts": {
+        "block": 16,
+        "geometric": 16,
+        "heavy_tailed": 16,
+        "sparse": 16
+      }
+    }
+  ]
+}

@@ -27,4 +27,5 @@ fma_memory_size: 100
 fma_min_delta: 0.05
 fma_top_k_failures: 3
 fma_heuristic_coverage_weight: 0.2
+# null stores failure_memory.json in the profiler's per-run log directory.
 fma_archive_path: null
